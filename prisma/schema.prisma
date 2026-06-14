@@ -1,0 +1,444 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  EDITOR
+  AUTHOR
+  VIEWER
+}
+
+enum PostStatus {
+  DRAFT
+  REVIEW
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum PostType {
+  ARTICLE
+  ANALYSIS
+  OPINION
+  PRESS_RELEASE
+  SPONSORED
+}
+
+enum AIStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  HUMAN_REVIEW
+}
+
+enum AdPlacement {
+  HEADER
+  SIDEBAR
+  IN_ARTICLE
+  BETWEEN_POSTS
+  ARTICLE_TOP
+  ARTICLE_BOTTOM
+  FOOTER
+  POPUP
+}
+
+enum AdType {
+  IMAGE
+  ADSENSE
+  AFFILIATE
+  SPONSORED
+  CUSTOM_HTML
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  UNSUBSCRIBED
+  BOUNCED
+}
+
+// ─── USER ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid()) @db.Char(36)
+  email         String    @unique @db.VarChar(191)
+  username      String    @unique @db.VarChar(100)
+  password      String    @db.VarChar(255)
+  firstName     String    @db.VarChar(100)
+  lastName      String    @db.VarChar(100)
+  bio           String?   @db.Text
+  avatar        String?   @db.VarChar(500)
+  role          Role      @default(AUTHOR)
+  isActive      Boolean   @default(true)
+  emailVerified Boolean   @default(false)
+  twitterHandle String?   @db.VarChar(100)
+  linkedinUrl   String?   @db.VarChar(500)
+  websiteUrl    String?   @db.VarChar(500)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLogin     DateTime?
+
+  posts          Post[]
+  sessions       Session[]
+  comments       Comment[]
+  passwordResets PasswordReset[]
+
+  @@index([email])
+  @@index([username])
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Char(36)
+  userId    String   @db.Char(36)
+  token     String   @unique @db.VarChar(500)
+  isActive  Boolean  @default(true)
+  userAgent String?  @db.VarChar(500)
+  ipAddress String?  @db.VarChar(45)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("sessions")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid()) @db.Char(36)
+  userId    String    @db.Char(36)
+  token     String    @unique @db.VarChar(255)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_resets")
+}
+
+// ─── CATEGORY ─────────────────────────────────────────────────────────────────
+
+model Category {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String   @unique @db.VarChar(191)
+  slug        String   @unique @db.VarChar(191)
+  description String?  @db.Text
+  image       String?  @db.VarChar(500)
+  color       String?  @db.VarChar(20)
+  icon        String?  @db.VarChar(10)
+  parentId    String?  @db.Char(36)
+  metaTitle   String?  @db.VarChar(191)
+  metaDesc    String?  @db.VarChar(500)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  posts    Post[]
+
+  @@index([slug])
+  @@map("categories")
+}
+
+// ─── TAG ─────────────────────────────────────────────────────────────────────
+
+model Tag {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String   @unique @db.VarChar(191)
+  slug        String   @unique @db.VarChar(191)
+  description String?  @db.VarChar(500)
+  color       String?  @db.VarChar(20)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  posts PostTag[]
+
+  @@index([slug])
+  @@map("tags")
+}
+
+// ─── POST ─────────────────────────────────────────────────────────────────────
+
+model Post {
+  id            String     @id @default(uuid()) @db.Char(36)
+  title         String     @db.VarChar(500)
+  slug          String     @unique @db.VarChar(191)
+  excerpt       String?    @db.Text
+  content       String     @db.LongText
+  featuredImage String?    @db.VarChar(500)
+  imageAlt      String?    @db.VarChar(300)
+  imageCaption  String?    @db.VarChar(300)
+  status        PostStatus @default(DRAFT)
+  postType      PostType   @default(ARTICLE)
+  authorId      String     @db.Char(36)
+  categoryId    String     @db.Char(36)
+  isFeatured    Boolean    @default(false)
+  isTrending    Boolean    @default(false)
+  isBreaking    Boolean    @default(false)
+  allowComments Boolean    @default(true)
+  viewCount     Int        @default(0)
+  shareCount    Int        @default(0)
+  readingTime   Int        @default(0)
+  publishedAt   DateTime?
+  scheduledAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  // SEO
+  metaTitle     String?    @db.VarChar(191)
+  metaDesc      String?    @db.VarChar(500)
+  canonicalUrl  String?    @db.VarChar(500)
+  ogImage       String?    @db.VarChar(500)
+  noIndex       Boolean    @default(false)
+  // AMP
+  ampEnabled    Boolean    @default(true)
+  // Source
+  sourceUrl     String?    @db.VarChar(500)
+  sourceName    String?    @db.VarChar(191)
+  // AI
+  isAiGenerated  Boolean   @default(false)
+  aiQualityScore Float?
+
+  author    User      @relation(fields: [authorId], references: [id])
+  category  Category  @relation(fields: [categoryId], references: [id])
+  tags      PostTag[]
+  comments  Comment[]
+  analytics PostAnalytics[]
+  aiLog     AIContentLog?
+
+  @@index([slug])
+  @@index([status])
+  @@index([authorId])
+  @@index([categoryId])
+  @@index([publishedAt])
+  @@index([isFeatured])
+  @@index([isTrending])
+  @@map("posts")
+}
+
+model PostTag {
+  postId String @db.Char(36)
+  tagId  String @db.Char(36)
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+  @@map("post_tags")
+}
+
+// ─── COMMENT ─────────────────────────────────────────────────────────────────
+
+model Comment {
+  id          String   @id @default(uuid()) @db.Char(36)
+  postId      String   @db.Char(36)
+  authorId    String?  @db.Char(36)
+  authorName  String?  @db.VarChar(191)
+  authorEmail String?  @db.VarChar(191)
+  content     String   @db.Text
+  status      String   @default("PENDING") @db.VarChar(20)
+  parentId    String?  @db.Char(36)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  post    Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author  User?     @relation(fields: [authorId], references: [id])
+  parent  Comment?  @relation("CommentTree", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentTree")
+
+  @@index([postId])
+  @@index([status])
+  @@map("comments")
+}
+
+// ─── ANALYTICS ────────────────────────────────────────────────────────────────
+
+model PostAnalytics {
+  id          String   @id @default(uuid()) @db.Char(36)
+  postId      String   @db.Char(36)
+  date        DateTime @db.Date
+  pageViews   Int      @default(0)
+  uniqueViews Int      @default(0)
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, date])
+  @@index([postId])
+  @@index([date])
+  @@map("post_analytics")
+}
+
+model SiteAnalytics {
+  id          String   @id @default(uuid()) @db.Char(36)
+  date        DateTime @db.Date
+  totalViews  Int      @default(0)
+  uniqueViews Int      @default(0)
+  newUsers    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([date])
+  @@map("site_analytics")
+}
+
+// ─── ADVERTISEMENT ────────────────────────────────────────────────────────────
+
+model Advertisement {
+  id          String      @id @default(uuid()) @db.Char(36)
+  name        String      @db.VarChar(191)
+  type        AdType      @default(IMAGE)
+  placement   AdPlacement
+  imageUrl    String?     @db.VarChar(500)
+  linkUrl     String?     @db.VarChar(500)
+  altText     String?     @db.VarChar(300)
+  htmlCode    String?     @db.Text
+  adsenseSlot String?     @db.VarChar(100)
+  width       Int?
+  height      Int?
+  isActive    Boolean     @default(true)
+  startDate   DateTime?
+  endDate     DateTime?
+  impressions Int         @default(0)
+  clicks      Int         @default(0)
+  priority    Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([placement, isActive])
+  @@map("advertisements")
+}
+
+// ─── NEWSLETTER ───────────────────────────────────────────────────────────────
+
+model Newsletter {
+  id        String             @id @default(uuid()) @db.Char(36)
+  email     String             @unique @db.VarChar(191)
+  firstName String?            @db.VarChar(100)
+  status    SubscriptionStatus @default(ACTIVE)
+  source    String?            @db.VarChar(100)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@map("newsletters")
+}
+
+// ─── RSS SOURCES ──────────────────────────────────────────────────────────────
+
+model RssSource {
+  id             String    @id @default(uuid()) @db.Char(36)
+  name           String    @db.VarChar(191)
+  url            String    @unique @db.VarChar(500)
+  category       String?   @db.VarChar(100)
+  isActive       Boolean   @default(true)
+  fetchInterval  Int       @default(60)
+  lastFetchedAt  DateTime?
+  lastError      String?   @db.Text
+  postsGenerated Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  logs AIContentLog[]
+
+  @@map("rss_sources")
+}
+
+// ─── AI CONTENT ───────────────────────────────────────────────────────────────
+
+model AIContentLog {
+  id               String    @id @default(uuid()) @db.Char(36)
+  postId           String?   @unique @db.Char(36)
+  rssSourceId      String?   @db.Char(36)
+  originalTitle    String?   @db.VarChar(500)
+  rewrittenTitle   String?   @db.VarChar(500)
+  sourceUrl        String?   @db.VarChar(500)
+  sourceName       String?   @db.VarChar(191)
+  status           AIStatus  @default(PENDING)
+  qualityScore     Float?
+  errorMessage     String?   @db.Text
+  processingTimeMs Int?
+  tokensUsed       Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  post      Post?      @relation(fields: [postId], references: [id])
+  rssSource RssSource? @relation(fields: [rssSourceId], references: [id])
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("ai_content_logs")
+}
+
+model AISettings {
+  id                  String   @id @default(uuid()) @db.Char(36)
+  model               String   @default("gpt-4o-mini") @db.VarChar(100)
+  maxTokens           Int      @default(2000)
+  temperature         Float    @default(0.7)
+  autoPublish         Boolean  @default(false)
+  humanReviewRequired Boolean  @default(true)
+  qualityThreshold    Float    @default(0.7)
+  duplicateThreshold  Float    @default(0.85)
+  generateImages      Boolean  @default(true)
+  scheduleEnabled     Boolean  @default(true)
+  scheduleInterval    Int      @default(60)
+  maxDailyArticles    Int      @default(50)
+  rewritePrompt       String?  @db.Text
+  updatedAt           DateTime @updatedAt
+
+  @@map("ai_settings")
+}
+
+// ─── SEO SETTINGS ─────────────────────────────────────────────────────────────
+
+model SeoSettings {
+  id                     String   @id @default(uuid()) @db.Char(36)
+  siteName               String   @default("MoneyPuran") @db.VarChar(191)
+  tagline                String?  @db.VarChar(300)
+  siteUrl                String?  @db.VarChar(500)
+  defaultMetaTitle       String?  @db.VarChar(191)
+  defaultMetaDescription String?  @db.Text
+  defaultMetaKeywords    String?  @db.VarChar(500)
+  ogImage                String?  @db.VarChar(500)
+  twitterHandle          String?  @db.VarChar(100)
+  googleAnalyticsId      String?  @db.VarChar(50)
+  googleSearchConsoleId  String?  @db.VarChar(200)
+  robotsTxt              String?  @db.Text
+  sitemapEnabled         Boolean  @default(true)
+  schemaEnabled          Boolean  @default(true)
+  ampEnabled             Boolean  @default(true)
+  canonicalEnabled       Boolean  @default(true)
+  updatedAt              DateTime @updatedAt
+
+  @@map("seo_settings")
+}
+
+// ─── MEDIA ────────────────────────────────────────────────────────────────────
+
+model Media {
+  id         String   @id @default(uuid()) @db.Char(36)
+  filename   String   @db.VarChar(255)
+  url        String   @db.VarChar(500)
+  mimeType   String   @db.VarChar(100)
+  size       Int
+  width      Int?
+  height     Int?
+  alt        String?  @db.VarChar(300)
+  caption    String?  @db.VarChar(500)
+  uploadedBy String?  @db.Char(36)
+  createdAt  DateTime @default(now())
+
+  @@index([mimeType])
+  @@map("media")
+}
