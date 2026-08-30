@@ -31,6 +31,16 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Connectivity diagnostic
+        run: |
+          echo "--- runner egress IP ---"; curl -s https://api.ipify.org || true; echo
+          echo "--- homepage ---"; curl -s -o /dev/null -w "%{http_code} t=%{time_total}s\n" -A "Mozilla/5.0" https://moneypuran.com/ || echo "homepage: connect failed"
+          echo "--- wp-json (browser UA) ---"; curl -s -o /dev/null -w "%{http_code} t=%{time_total}s\n" -A "Mozilla/5.0" "https://moneypuran.com/wp-json/" || echo "wp-json UA=browser: connect failed"
+          echo "--- wp-json (worker UA) ---"; curl -s -o /dev/null -w "%{http_code} t=%{time_total}s\n" -A "moneypuran-newsdesk/1.0" "https://moneypuran.com/wp-json/" || echo "wp-json UA=worker: connect failed"
+          echo "--- users/me no-auth ---"; curl -s -m 15 -A "Mozilla/5.0" "https://moneypuran.com/wp-json/wp/v2/users/me?context=edit" || echo "users/me: connect failed"
+          echo "--- node fetch ---"; node -e 'try{const r=await fetch("https://moneypuran.com/wp-json/",{headers:{"User-Agent":"moneypuran-newsdesk/1.0"}});console.log("node fetch:",r.status)}catch(e){console.log("node fetch ERR:",e.message,"| cause:",e.cause&&(e.cause.code||e.cause.message))}'
+        continue-on-error: true
+
       - name: Run the news desk
         working-directory: worker
         env:
