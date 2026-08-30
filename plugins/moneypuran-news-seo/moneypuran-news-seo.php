@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -282,12 +282,18 @@ add_filter('rank_math/json_ld', function ($data, $jsonld) {
 }, 99, 2);
 
 /* ------------------------------------------------------------------ *
- * 5b. WITHOUT Rank Math (or any SEO plugin): emit a baseline
- *     Organization + WebSite JSON-LD so the site still has an entity.
+ * 5b. Publisher entity + breadcrumbs, emitted directly in wp_head.
+ *
+ *     The moneypuran-theme already outputs a clean NewsArticle node,
+ *     so we do NOT duplicate the article. We add the pieces the theme
+ *     leaves out: a rich NewsMediaOrganization (trust signals for
+ *     Google "About this source"), the WebSite node, and a
+ *     BreadcrumbList on single posts. Runs whether or not Rank Math's
+ *     Schema module is on; if it is on, filter 5a enriches its output
+ *     and this stays complementary (multiple JSON-LD blocks are fine).
  * ------------------------------------------------------------------ */
 add_action('wp_head', function () {
-    if (mp_has_rankmath()) return; // Rank Math already outputs this; 5a enriches it
-    if (is_admin()) return;
+    if (is_admin() || is_feed()) return;
 
     $logo = get_site_icon_url(512);
     $org = array(
@@ -304,21 +310,33 @@ add_action('wp_head', function () {
     );
     if ($logo) $org['logo'] = array('@type' => 'ImageObject', 'url' => $logo);
 
-    $graph = array(
-        '@context' => 'https://schema.org',
-        '@graph'   => array(
-            $org,
-            array(
-                '@type'     => 'WebSite',
-                '@id'       => home_url('/#website'),
-                'url'       => home_url('/'),
-                'name'      => get_bloginfo('name'),
-                'publisher' => array('@id' => home_url('/#organization')),
-                'inLanguage' => 'en-US',
-            ),
-        ),
-    );
-    echo "\n<script type=\"application/ld+json\">" . wp_json_encode($graph) . "</script>\n";
+    $graph = array($org, array(
+        '@type'      => 'WebSite',
+        '@id'        => home_url('/#website'),
+        'url'        => home_url('/'),
+        'name'       => MP_NEWS_PUBLICATION,
+        'publisher'  => array('@id' => home_url('/#organization')),
+        'inLanguage' => 'en-US',
+    ));
+
+    if (is_singular('post')) {
+        $pid   = get_queried_object_id();
+        $items = array(array('@type' => 'ListItem', 'position' => 1, 'name' => 'Home', 'item' => home_url('/')));
+        $cats  = get_the_category($pid);
+        if (!empty($cats)) {
+            $items[] = array('@type' => 'ListItem', 'position' => 2, 'name' => $cats[0]->name, 'item' => get_category_link($cats[0]->term_id));
+        }
+        $items[] = array('@type' => 'ListItem', 'position' => count($items) + 1, 'name' => wp_strip_all_tags(get_the_title($pid)), 'item' => get_permalink($pid));
+        $graph[] = array(
+            '@type'           => 'BreadcrumbList',
+            '@id'             => get_permalink($pid) . '#breadcrumb',
+            'itemListElement' => $items,
+        );
+    }
+
+    echo "\n<script type=\"application/ld+json\">"
+       . wp_json_encode(array('@context' => 'https://schema.org', '@graph' => $graph))
+       . "</script>\n";
 }, 5);
 
 /* ------------------------------------------------------------------ *
