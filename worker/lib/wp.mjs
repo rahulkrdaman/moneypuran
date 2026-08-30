@@ -15,7 +15,19 @@ export function makeWP({ siteUrl, username, appPassword }) {
     }
     const headers = { Authorization: auth, Accept: "application/json", "User-Agent": UA };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    const payload = body !== undefined ? JSON.stringify(body) : undefined;
+
+    // Retry transient network failures (CI runner cold-starts, edge blips).
+    let res, lastErr;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try { res = await fetch(url, { method, headers, body: payload }); break; }
+      catch (e) {
+        lastErr = e;
+        if (attempt === 4) throw new Error(`WP ${method} ${path} -> network: ${e.message}${e.cause?.code ? ` (${e.cause.code})` : ""}`);
+        await new Promise((r) => setTimeout(r, attempt * 1500));
+      }
+    }
+    if (!res) throw lastErr;
     const text = await res.text();
     let data; try { data = text ? JSON.parse(text) : null; } catch { data = text; }
     if (!res.ok) throw new Error(`WP ${method} ${path} -> ${res.status}: ${data?.message || String(data).slice(0, 200)}`);
