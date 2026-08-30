@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -15,6 +15,19 @@ const MP_NEWS_POST_TYPE   = 'post';
 
 // Must match worker/config.json -> indexNowKey and Rank Math -> Instant Indexing.
 const MP_INDEXNOW_KEY = '45d502c0fe78c9b0cd484adca03ee5b4';
+
+// Search-engine site verification (public meta tags). Value = the content of the
+// google-site-verification / msvalidate.01 tag from Search Console / Bing.
+// Filterable so it can be changed without editing this file.
+const MP_GOOGLE_SITE_VERIFICATION = '-YYgIBomvWMtymxAjdNAfSeSipeIOMBaK5TZtgaSmGs';
+const MP_BING_SITE_VERIFICATION   = '';
+
+add_action('wp_head', function () {
+    $g = apply_filters('mp_google_site_verification', MP_GOOGLE_SITE_VERIFICATION);
+    $b = apply_filters('mp_bing_site_verification', MP_BING_SITE_VERIFICATION);
+    if ($g) echo '<meta name="google-site-verification" content="' . esc_attr($g) . '">' . "\n";
+    if ($b) echo '<meta name="msvalidate.01" content="' . esc_attr($b) . '">' . "\n";
+}, 1);
 
 // Public profiles for the Organization `sameAs` (Google "About this source").
 function mp_news_same_as() {
