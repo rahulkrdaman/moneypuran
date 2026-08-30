@@ -1,0 +1,64 @@
+name: evergreen
+
+# See news-desk.yml: `schedule:` only fires from the default branch. Make
+# `newsroom` the default branch, or run this from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      per_run:
+        description: "How many evergreen articles to publish this run (1-6)"
+        required: false
+        default: "3"
+  schedule:
+    - cron: "40 */2 * * *"   # every 2 hours (UTC), offset from the news desk
+
+concurrency:
+  group: evergreen
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: moneypuran
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: newsroom
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Run the evergreen desk
+        working-directory: worker
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WP_SITE_URL: ${{ vars.WP_SITE_URL }}
+          WP_USERNAME: ${{ vars.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          EVERGREEN_PER_RUN: ${{ github.event.inputs.per_run || vars.EVERGREEN_PER_RUN || '3' }}
+        run: node evergreen.mjs
+
+      - name: Persist progress
+        if: always()
+        run: |
+          git config user.name "evergreen-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p /tmp/eg && cp worker/state/evergreen-done.json /tmp/eg/ 2>/dev/null || true
+          for attempt in 1 2 3 4 5 6; do
+            git fetch origin newsroom
+            git reset --hard origin/newsroom
+            mkdir -p worker/state
+            cp /tmp/eg/evergreen-done.json worker/state/ 2>/dev/null || true
+            git add worker/state/evergreen-done.json
+            if git diff --cached --quiet; then echo "no progress changes"; exit 0; fi
+            git commit -m "chore(evergreen): update progress [skip ci]"
+            if git push origin HEAD:newsroom; then echo "progress pushed (attempt $attempt)"; exit 0; fi
+            echo "push $attempt rejected, re-syncing..."; sleep $((RANDOM % 5 + 3))
+          done
+          echo "::warning::progress push failed after retries"

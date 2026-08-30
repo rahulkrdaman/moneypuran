@@ -1,0 +1,14 @@
+{
+  "name": "moneypuran-news-desk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Scheduled worker: official finance sources + market data -> original English business/markets articles -> WordPress.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dry": "node run.mjs --dry",
+    "start": "node run.mjs",
+    "evergreen": "node evergreen.mjs",
+    "evergreen:dry": "node evergreen.mjs --dry"
+  }
+}

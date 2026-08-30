@@ -1,0 +1,61 @@
+name: news-desk
+
+# IMPORTANT: GitHub only fires `schedule:` triggers for workflow files on the
+# repository's DEFAULT branch. This repo's newsroom system lives on the
+# `newsroom` branch, so for the cron to run you must either:
+#   (a) set `newsroom` as the default branch (Settings -> Branches), or
+#   (b) run it manually from the Actions tab (workflow_dispatch always works).
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "10 */2 * * *"   # every 2 hours (UTC); private-repo schedules are throttled
+
+concurrency:
+  group: news-desk
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: moneypuran   # secrets + variables live in this GitHub Environment
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: newsroom
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Run the news desk
+        working-directory: worker
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WP_SITE_URL: ${{ vars.WP_SITE_URL }}
+          WP_USERNAME: ${{ vars.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: node run.mjs
+
+      - name: Persist state
+        if: always()
+        run: |
+          git config user.name "news-desk-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p /tmp/nd && cp worker/state/seen.json worker/state/daily.json /tmp/nd/ 2>/dev/null || true
+          for attempt in 1 2 3 4 5 6; do
+            git fetch origin newsroom
+            git reset --hard origin/newsroom
+            mkdir -p worker/state
+            cp /tmp/nd/seen.json /tmp/nd/daily.json worker/state/ 2>/dev/null || true
+            git add worker/state/seen.json worker/state/daily.json
+            if git diff --cached --quiet; then echo "no state changes"; exit 0; fi
+            git commit -m "chore(news-desk): update state [skip ci]"
+            if git push origin HEAD:newsroom; then echo "state pushed (attempt $attempt)"; exit 0; fi
+            echo "push $attempt rejected, re-syncing..."; sleep $((RANDOM % 5 + 3))
+          done
+          echo "::warning::state push failed after retries; next run re-syncs from the feeds"
