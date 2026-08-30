@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -192,12 +192,14 @@ add_action('rest_api_init', function () {
 add_filter('rank_math/json_ld', function ($data, $jsonld) {
     if (!is_array($data)) return $data;
 
+    $has_org = false;
     foreach ($data as $key => $node) {
         if (!is_array($node) || !isset($node['@type'])) continue;
         $type = $node['@type'];
-        $is_org = (is_string($type) && $type === 'Organization')
-               || (is_array($type) && in_array('Organization', $type, true));
+        $is_org = (is_string($type) && in_array($type, array('Organization', 'NewsMediaOrganization'), true))
+               || (is_array($type) && (in_array('Organization', $type, true) || in_array('NewsMediaOrganization', $type, true)));
         if ($is_org) {
+            $has_org = true;
             $data[$key]['@type'] = 'NewsMediaOrganization';
             $data[$key]['sameAs'] = array_values(array_unique(array_merge(
                 isset($node['sameAs']) ? (array) $node['sameAs'] : array(),
@@ -211,6 +213,38 @@ add_filter('rank_math/json_ld', function ($data, $jsonld) {
                 'knowsLanguage'        => array('en', 'en-US', 'en-IN'),
                 'foundingDate'         => '2026',
             );
+        }
+        // Base Article -> NewsArticle for posts (Rank Math emits "Article" by default).
+        if (is_singular('post')) {
+            $t = is_array($type) ? $type : array($type);
+            if (in_array('Article', $t, true) && !in_array('NewsArticle', $t, true)) {
+                $data[$key]['@type'] = 'NewsArticle';
+            }
+        }
+    }
+
+    // No Organization node anywhere (e.g. Knowledge Graph set to Person)? Add one
+    // so posts have a real publisher entity and "About this source" has data.
+    if (!$has_org) {
+        $logo = get_site_icon_url(512);
+        $org = array(
+            '@type'  => 'NewsMediaOrganization',
+            '@id'    => home_url('/#organization'),
+            'name'   => MP_NEWS_PUBLICATION,
+            'url'    => home_url('/'),
+            'sameAs' => mp_news_same_as(),
+            'publishingPrinciples' => home_url('/editorial-policy/'),
+            'correctionsPolicy'    => home_url('/corrections-policy/'),
+            'ownershipFundingInfo' => home_url('/ownership-and-funding/'),
+            'knowsLanguage'        => array('en', 'en-US', 'en-IN'),
+            'foundingDate'         => '2026',
+        );
+        if ($logo) $org['logo'] = array('@type' => 'ImageObject', 'url' => $logo);
+        $data['mp_organization'] = $org;
+        foreach ($data as $k => $node) {
+            if (is_array($node) && in_array(($node['@type'] ?? ''), array('NewsArticle', 'Article', 'BlogPosting'), true) && empty($node['publisher'])) {
+                $data[$k]['publisher'] = array('@id' => home_url('/#organization'));
+            }
         }
     }
 
