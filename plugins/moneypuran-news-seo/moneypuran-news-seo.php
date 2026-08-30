@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.4
+ * Version: 1.0.6
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -46,37 +46,64 @@ function mp_has_rankmath() {
 }
 
 /* ------------------------------------------------------------------ *
- * 0c. Make WordPress REST API Application Password auth work.
- *
- * On many Apache / LiteSpeed / CGI setups (Hostinger included) the
- * `Authorization: Basic` header is stripped before it reaches PHP, so
- * REST requests authenticated with an Application Password come back
- * as `rest_not_logged_in`. Two belts:
- *   (a) reconstruct the header from the CGI REDIRECT_* copies, and
- *   (b) write an .htaccess pass-through rule (the reliable fix).
+ * 0c. Make WordPress REST API Application Password auth work on this
+ *     Hostinger + custom-theme stack. Three fixes:
+ *   (a) restore $_SERVER['HTTP_AUTHORIZATION'] / PHP_AUTH_USER|PW from
+ *       the CGI REDIRECT_* copies + an .htaccess pass-through rule;
+ *   (b) force `application_password_is_api_request` true for REST/XML-RPC
+ *       (the custom MoneyPuran plugin/theme had removed core's filter, so
+ *       app-password auth never ran and every call was `rest_not_logged_in`).
  * ------------------------------------------------------------------ */
 add_action('plugins_loaded', function () {
-    if (!empty($_SERVER['HTTP_AUTHORIZATION'])) return;
-    foreach (array('REDIRECT_HTTP_AUTHORIZATION', 'REDIRECT_REDIRECT_HTTP_AUTHORIZATION') as $k) {
-        if (!empty($_SERVER[$k])) { $_SERVER['HTTP_AUTHORIZATION'] = $_SERVER[$k]; return; }
+    if (empty($_SERVER['HTTP_AUTHORIZATION'])) {
+        foreach (array('REDIRECT_HTTP_AUTHORIZATION', 'REDIRECT_REDIRECT_HTTP_AUTHORIZATION') as $k) {
+            if (!empty($_SERVER[$k])) { $_SERVER['HTTP_AUTHORIZATION'] = $_SERVER[$k]; break; }
+        }
+        if (empty($_SERVER['HTTP_AUTHORIZATION']) && function_exists('apache_request_headers')) {
+            foreach (apache_request_headers() as $name => $val) {
+                if (strtolower($name) === 'authorization') { $_SERVER['HTTP_AUTHORIZATION'] = $val; break; }
+            }
+        }
     }
-    if (function_exists('apache_request_headers')) {
-        $h = apache_request_headers();
-        foreach ($h as $name => $val) {
-            if (strtolower($name) === 'authorization') { $_SERVER['HTTP_AUTHORIZATION'] = $val; return; }
+    // Populate PHP_AUTH_USER/PW from a Basic header PHP didn't split itself.
+    if (empty($_SERVER['PHP_AUTH_USER']) && !empty($_SERVER['HTTP_AUTHORIZATION'])
+        && stripos($_SERVER['HTTP_AUTHORIZATION'], 'basic ') === 0) {
+        $creds = base64_decode(substr($_SERVER['HTTP_AUTHORIZATION'], 6));
+        if ($creds && strpos($creds, ':') !== false) {
+            list($u, $p) = explode(':', $creds, 2);
+            $_SERVER['PHP_AUTH_USER'] = $u;
+            $_SERVER['PHP_AUTH_PW']   = $p;
         }
     }
 }, 0);
 
+/*
+ * The core filter that makes Application Password auth apply to REST / XML-RPC
+ * requests has been removed or overridden on this site (the custom MoneyPuran
+ * plugin/theme does its own API auth). Without it `wp_authenticate_application_password()`
+ * bails before checking the password and every REST call is anonymous
+ * (`rest_not_logged_in`). Restore core's intended behaviour.
+ */
+add_filter('application_password_is_api_request', function ($is) {
+    if ($is) return true;
+    if (defined('REST_REQUEST') && REST_REQUEST) return true;
+    if (defined('XMLRPC_REQUEST') && XMLRPC_REQUEST) return true;
+    $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+    if (strpos($uri, '/wp-json/') !== false || strpos($uri, 'rest_route=') !== false) return true;
+    return $is;
+}, 99);
+
 // Add the .htaccess rule once (idempotent, marker-delimited, non-fatal).
 add_action('admin_init', function () {
-    if (get_option('mp_htaccess_auth') === '2') return;
+    if (get_option('mp_htaccess_auth') === 'v3') return;
     $htaccess = get_home_path() . '.htaccess';
     if (!file_exists($htaccess) || !is_writable($htaccess)) {
         update_option('mp_htaccess_auth', 'skip', false);
         return;
     }
     require_once ABSPATH . 'wp-admin/includes/misc.php';
+    // Only set the env var when a non-empty Authorization header is actually
+    // present (a bare "(.*)" match sets it to "" and shadows the real value).
     $lines = array(
         '<IfModule mod_rewrite.c>',
         'RewriteEngine On',
@@ -84,11 +111,11 @@ add_action('admin_init', function () {
         'RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]',
         '</IfModule>',
         '<IfModule mod_setenvif.c>',
-        'SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1',
+        'SetEnvIfNoCase ^Authorization$ "(.+)" HTTP_AUTHORIZATION=$1',
         '</IfModule>',
     );
     if (insert_with_markers($htaccess, 'MoneyPuran REST Auth', $lines)) {
-        update_option('mp_htaccess_auth', '2', false);
+        update_option('mp_htaccess_auth', 'v3', false);
     }
 });
 
