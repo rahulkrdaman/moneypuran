@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.3
+ * Version: 1.0.4
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -44,6 +44,53 @@ function mp_news_same_as() {
 function mp_has_rankmath() {
     return class_exists('RankMath') || function_exists('rank_math');
 }
+
+/* ------------------------------------------------------------------ *
+ * 0c. Make WordPress REST API Application Password auth work.
+ *
+ * On many Apache / LiteSpeed / CGI setups (Hostinger included) the
+ * `Authorization: Basic` header is stripped before it reaches PHP, so
+ * REST requests authenticated with an Application Password come back
+ * as `rest_not_logged_in`. Two belts:
+ *   (a) reconstruct the header from the CGI REDIRECT_* copies, and
+ *   (b) write an .htaccess pass-through rule (the reliable fix).
+ * ------------------------------------------------------------------ */
+add_action('plugins_loaded', function () {
+    if (!empty($_SERVER['HTTP_AUTHORIZATION'])) return;
+    foreach (array('REDIRECT_HTTP_AUTHORIZATION', 'REDIRECT_REDIRECT_HTTP_AUTHORIZATION') as $k) {
+        if (!empty($_SERVER[$k])) { $_SERVER['HTTP_AUTHORIZATION'] = $_SERVER[$k]; return; }
+    }
+    if (function_exists('apache_request_headers')) {
+        $h = apache_request_headers();
+        foreach ($h as $name => $val) {
+            if (strtolower($name) === 'authorization') { $_SERVER['HTTP_AUTHORIZATION'] = $val; return; }
+        }
+    }
+}, 0);
+
+// Add the .htaccess rule once (idempotent, marker-delimited, non-fatal).
+add_action('admin_init', function () {
+    if (get_option('mp_htaccess_auth') === '2') return;
+    $htaccess = get_home_path() . '.htaccess';
+    if (!file_exists($htaccess) || !is_writable($htaccess)) {
+        update_option('mp_htaccess_auth', 'skip', false);
+        return;
+    }
+    require_once ABSPATH . 'wp-admin/includes/misc.php';
+    $lines = array(
+        '<IfModule mod_rewrite.c>',
+        'RewriteEngine On',
+        'RewriteCond %{HTTP:Authorization} .',
+        'RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]',
+        '</IfModule>',
+        '<IfModule mod_setenvif.c>',
+        'SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1',
+        '</IfModule>',
+    );
+    if (insert_with_markers($htaccess, 'MoneyPuran REST Auth', $lines)) {
+        update_option('mp_htaccess_auth', '2', false);
+    }
+});
 
 /* ------------------------------------------------------------------ *
  * 1. Serve /news-sitemap.xml  (Google News; last 48h of posts)
