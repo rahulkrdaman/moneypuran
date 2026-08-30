@@ -1,6 +1,8 @@
 // Dependency-free WordPress REST client.
 
-const UA = "moneypuran-newsdesk/1.0";
+// A real browser UA: Hostinger's edge (hcdn) bot-challenges datacenter IPs that
+// send an unfamiliar User-Agent, returning a 403 HTML page instead of JSON.
+const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 export function makeWP({ siteUrl, username, appPassword }) {
   const base = siteUrl.replace(/\/+$/, "") + "/wp-json";
@@ -17,20 +19,33 @@ export function makeWP({ siteUrl, username, appPassword }) {
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const payload = body !== undefined ? JSON.stringify(body) : undefined;
 
-    // Retry transient network failures (CI runner cold-starts, edge blips).
-    let res, lastErr;
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try { res = await fetch(url, { method, headers, body: payload }); break; }
-      catch (e) {
+    // Retry transient network failures + edge bot-challenges (a 403/HTML page,
+    // or 429/502/503). CI runners cold-start slowly and Hostinger's edge
+    // sometimes challenges the first requests from a datacenter IP.
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    let res, text, data, lastErr;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        res = await fetch(url, { method, headers, body: payload });
+        text = await res.text();
+        try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+        const edgeChallenge = res.status === 403 && typeof data === "string" && /<html|<!doctype/i.test(data);
+        if ((edgeChallenge || [429, 502, 503, 520, 522].includes(res.status)) && attempt < 5) {
+          await wait(attempt * 3000);
+          continue;
+        }
+        break;
+      } catch (e) {
         lastErr = e;
-        if (attempt === 4) throw new Error(`WP ${method} ${path} -> network: ${e.message}${e.cause?.code ? ` (${e.cause.code})` : ""}`);
-        await new Promise((r) => setTimeout(r, attempt * 1500));
+        if (attempt === 5) throw new Error(`WP ${method} ${path} -> network: ${e.message}${e.cause?.code ? ` (${e.cause.code})` : ""}`);
+        await wait(attempt * 2500);
       }
     }
     if (!res) throw lastErr;
-    const text = await res.text();
-    let data; try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-    if (!res.ok) throw new Error(`WP ${method} ${path} -> ${res.status}: ${data?.message || String(data).slice(0, 200)}`);
+    if (!res.ok) {
+      const detail = data && data.message ? data.message : String(data).replace(/\s+/g, " ").slice(0, 300);
+      throw new Error(`WP ${method} ${path} -> ${res.status}: ${detail}`);
+    }
     return { data, headers: res.headers };
   }
 
