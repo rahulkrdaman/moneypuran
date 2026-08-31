@@ -18,7 +18,9 @@
     "postinstall": "prisma generate",
     "db:deploy": "prisma migrate deploy",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "worker:market": "tsx src/workers/market-worker.cli.ts",
+    "worker:market:once": "tsx src/workers/market-worker.cli.ts --once"
   },
   "dependencies": {
     "next": "^15.3.0",
@@ -57,7 +59,8 @@
     "eslint-config-next": "^15.3.0",
     "@typescript-eslint/parser": "^8.18.0",
     "ts-node": "^10.9.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "tsx": "^4.19.2"
   },
   "optionalDependencies": {
     "sharp": "^0.33.5"
