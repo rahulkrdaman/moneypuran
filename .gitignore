@@ -29,3 +29,9 @@ yarn-error.log*
 *.pem
 .vercel
 .turbo
+
+# platform branch
+.env.test
+
+tsconfig.tsbuildinfo
+*.tsbuildinfo

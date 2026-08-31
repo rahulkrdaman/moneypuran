@@ -442,3 +442,198 @@ model Media {
   @@index([mimeType])
   @@map("media")
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  MARKET DATA  (platform branch — additive; does not modify CMS models above)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum AssetClass {
+  STOCK
+  ETF
+  INDEX
+  CRYPTO
+  FOREX
+  COMMODITY
+}
+
+enum MarketEventImportance {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// The curated symbol universe — mirrors src/lib/market/symbols.ts, but the DB
+/// copy lets the admin edit descriptions / toggle SEO pages without a deploy.
+model MarketSymbol {
+  id           String     @id @default(uuid()) @db.Char(36)
+  symbol       String     @unique @db.VarChar(40)   // canonical, e.g. "AAPL", "BTC", "^GSPC"
+  slug         String     @db.VarChar(120)
+  name         String     @db.VarChar(191)
+  assetClass   AssetClass
+  currency     String     @default("USD") @db.VarChar(10)
+  exchange     String?    @db.VarChar(40)
+  market       String?    @db.VarChar(10)            // "US" | "IN" | "UK" | …
+  aliases      String?    @db.Text                   // JSON string[]
+  providerMap  String?    @db.Text                   // JSON Record<providerId,string>
+  description  String?    @db.Text
+  isSeoPage    Boolean    @default(true)
+  isTicker     Boolean    @default(false)
+  sortOrder    Int        @default(0)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  latest       MarketQuote?
+  history      HistoricalPrice[]
+
+  @@index([assetClass])
+  @@index([slug])
+  @@index([market])
+  @@map("market_symbols")
+}
+
+/// Latest snapshot per symbol (upserted by the market-data worker). Serving path
+/// still prefers Redis; this is the durable fallback + admin visibility.
+model MarketQuote {
+  symbolId      String     @id @db.Char(36)
+  price         Float
+  currency      String     @db.VarChar(10)
+  changeAbs     Float?
+  changePct     Float?
+  previousClose Float?
+  dayHigh       Float?
+  dayLow        Float?
+  yearHigh      Float?
+  yearLow       Float?
+  volume        Float?
+  marketCap     Float?
+  entitlement   String     @db.VarChar(20)           // realtime | delayed | eod | mock
+  source        String     @db.VarChar(40)
+  asOf          DateTime
+  updatedAt     DateTime   @updatedAt
+
+  symbol        MarketSymbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+
+  @@map("market_quotes")
+}
+
+model HistoricalPrice {
+  id        String   @id @default(uuid()) @db.Char(36)
+  symbolId  String   @db.Char(36)
+  interval  String   @db.VarChar(10)                 // 1day | 1week | 1month | 1h | …
+  t         DateTime                                  // bar open
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float?
+  source    String   @db.VarChar(40)
+
+  symbol    MarketSymbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+
+  @@unique([symbolId, interval, t])
+  @@index([symbolId, interval])
+  @@map("historical_prices")
+}
+
+/// Provider registry + rolling health, editable from the admin (spec §34).
+model MarketProvider {
+  id                String    @id @db.VarChar(40)    // "twelvedata" | "coingecko" | …
+  displayName       String    @db.VarChar(100)
+  isEnabled         Boolean   @default(true)
+  isPrimary         Boolean   @default(false)
+  plan              String?   @db.VarChar(40)
+  externalDisplayOk Boolean   @default(false)
+  dailyQuota        Int?
+  usedToday         Int       @default(0)
+  circuitState      String    @default("closed") @db.VarChar(20)
+  lastOkAt          DateTime?
+  lastError         String?   @db.Text
+  lastErrorAt       DateTime?
+  updatedAt         DateTime  @updatedAt
+
+  @@map("market_providers")
+}
+
+/// Every upstream call + cache decision, for the admin "market data logs" view.
+model MarketDataLog {
+  id         String   @id @default(uuid()) @db.Char(36)
+  provider   String   @db.VarChar(40)
+  method     String   @db.VarChar(40)                // quote | quotes | candles | movers | ping
+  symbol     String?  @db.VarChar(40)
+  cache      String   @db.VarChar(20)                // hit | stale | miss
+  ok         Boolean
+  status     Int?
+  latencyMs  Int?
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([provider, createdAt])
+  @@index([createdAt])
+  @@map("market_data_logs")
+}
+
+// ─── CALENDARS (spec §19–21) ──────────────────────────────────────────────────
+
+model EconomicEvent {
+  id           String                @id @default(uuid()) @db.Char(36)
+  country      String                @db.VarChar(4)
+  title        String                @db.VarChar(191)   // "US CPI (YoY)", "Fed Interest Rate Decision"
+  category     String?               @db.VarChar(60)
+  importance   MarketEventImportance  @default(MEDIUM)
+  eventTime    DateTime
+  actual       String?               @db.VarChar(60)
+  forecast     String?               @db.VarChar(60)
+  previous     String?               @db.VarChar(60)
+  unit         String?               @db.VarChar(20)
+  source       String?               @db.VarChar(80)
+  sourceUrl    String?               @db.VarChar(500)
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@unique([country, title, eventTime])
+  @@index([eventTime])
+  @@index([importance])
+  @@map("economic_events")
+}
+
+model EarningsEvent {
+  id            String    @id @default(uuid()) @db.Char(36)
+  symbol        String    @db.VarChar(40)
+  companyName   String    @db.VarChar(191)
+  market        String    @db.VarChar(10)
+  reportDate    DateTime
+  session       String?   @db.VarChar(10)             // "bmo" | "amc"
+  epsEstimate   Float?
+  epsActual     Float?
+  revenueEst    Float?
+  revenueActual Float?
+  surprisePct   Float?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([symbol, reportDate])
+  @@index([reportDate])
+  @@map("earnings_events")
+}
+
+model IpoEvent {
+  id            String    @id @default(uuid()) @db.Char(36)
+  companyName   String    @db.VarChar(191)
+  symbol        String?   @db.VarChar(40)
+  exchange      String    @db.VarChar(40)
+  market        String    @db.VarChar(10)
+  expectedDate  DateTime?
+  priceLow      Float?
+  priceHigh     Float?
+  shares        Float?
+  valuation     Float?
+  industry      String?   @db.VarChar(80)
+  status        String    @default("upcoming") @db.VarChar(20)
+  prospectusUrl String?   @db.VarChar(500)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([expectedDate])
+  @@index([status])
+  @@map("ipo_events")
+}

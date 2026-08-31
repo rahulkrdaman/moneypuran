@@ -6,7 +6,7 @@ export async function rateLimit(
   limit = 100,
   windowSeconds = 60
 ): Promise<{ success: boolean; remaining: number }> {
-  const ip = req.headers.get("x-forwarded-for") || req.ip || "anonymous";
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anonymous";
   const key = `ratelimit:${ip}:${Math.floor(Date.now() / (windowSeconds * 1000))}`;
   try {
     const redis = getRedis();

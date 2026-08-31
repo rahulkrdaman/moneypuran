@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
+import { GlobalTicker } from "@/components/market/GlobalTicker";
 
 async function getLayoutData() {
   const [categories, breakingPost] = await Promise.all([
@@ -15,6 +16,8 @@ export default async function FrontendLayout({ children }: { children: React.Rea
   return (
     <>
       <Header categories={categories} breakingNews={breakingNews} />
+      {/* Global market ticker (spec §4) — client component, streams /api/market/ticker */}
+      <GlobalTicker />
       <main className="min-h-screen">{children}</main>
       <Footer categories={categories} />
     </>

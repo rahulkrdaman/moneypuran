@@ -30,14 +30,14 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(bytes);
 
     // Optimise with sharp if available
-    let finalBuffer = buffer;
+    let finalBuffer: Buffer = buffer;
     let ext = path.extname(file.name).toLowerCase() || ".jpg";
     try {
       const sharp = (await import("sharp")).default;
-      finalBuffer = await sharp(buffer)
+      finalBuffer = Buffer.from(await sharp(buffer)
         .resize(1200, 800, { fit: "inside", withoutEnlargement: true })
         .webp({ quality: 85 })
-        .toBuffer();
+        .toBuffer());
       ext = ".webp";
     } catch {
       // sharp not installed or error — use original

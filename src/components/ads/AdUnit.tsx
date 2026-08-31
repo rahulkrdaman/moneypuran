@@ -27,11 +27,11 @@ export function AdUnit({ ad }: AdUnitProps) {
         <p className="ad-label">Advertisement</p>
         {ad.type === "IMAGE" && ad.imageUrl && ad.linkUrl && (
           <a href={ad.linkUrl} target="_blank" rel="noopener noreferrer nofollow" onClick={handleClick}>
-            <img src={ad.imageUrl} alt={ad.altText || "Advertisement"} width={ad.width} height={ad.height} loading="lazy" className="max-w-full" />
+            <img src={ad.imageUrl} alt={ad.altText || "Advertisement"} width={ad.width ?? undefined} height={ad.height ?? undefined} loading="lazy" className="max-w-full" />
           </a>
         )}
         {ad.type === "ADSENSE" && (
-          <ins className="adsbygoogle" style={{ display:"block", width: ad.width, height: ad.height }}
+          <ins className="adsbygoogle" style={{ display:"block", width: ad.width ?? undefined, height: ad.height ?? undefined }}
             data-ad-client={process.env.NEXT_PUBLIC_ADSENSE_ID}
             data-ad-slot={ad.adsenseSlot} data-ad-format="auto" data-full-width-responsive="true" />
         )}

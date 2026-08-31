@@ -6,9 +6,9 @@ import { useRouter } from "next/navigation";
 
 interface SearchResult { id: string; title: string; slug: string; excerpt: string | null; category: { name: string; slug: string } | null; publishedAt: string | null }
 
-function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number) {
+function debounce<A extends unknown[]>(fn: (...args: A) => unknown, ms: number) {
   let timer: ReturnType<typeof setTimeout>;
-  return (...args: Parameters<T>) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+  return (...args: A) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 
 interface SearchBarProps { placeholder?: string; className?: string; size?: "sm" | "md" | "lg" }

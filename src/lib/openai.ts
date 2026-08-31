@@ -86,6 +86,6 @@ export async function generateImage(prompt: string): Promise<string | null> {
       quality: "standard",
       n: 1,
     });
-    return response.data[0]?.url || null;
+    return response.data?.[0]?.url || null;
   } catch { return null; }
 }
