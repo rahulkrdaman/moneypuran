@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -655,8 +655,8 @@ function mp_md_sessions($ist = null, $et = null) {
 
 function mp_md_ticker_cats() {
     return array(
-        'india'       => 'indian-markets,stocks,ipos,earnings',
-        'us'          => 'us-markets,global-markets,economy,central-banks,regulation',
+        'india'       => 'indian-markets,stocks,ipos,earnings,central-banks',
+        'us'          => 'us-markets,global-markets,economy,regulation',
         'commodities' => 'commodities,economy',
         'closed'      => '',
     );
@@ -707,11 +707,14 @@ function mp_md_ticker_data() {
         }
     }
 
-    // Live market lines from the market-data caches.
-    $idx = mp_md_get_indices();
-    $by  = array();
+    // Live market lines - READ ONLY from the warmed caches (the cron keeps them
+    // fresh). Never trigger a blocking Yahoo fetch from the ticker request.
+    $idxT = get_transient(MP_MD_IDX_KEY);
+    $grpT = get_transient(MP_MD_GRP_KEY);
+    $idx  = is_array($idxT) && !empty($idxT['indices']) ? $idxT : array('indices' => array());
+    $grp  = is_array($grpT) ? $grpT : array();
+    $by   = array();
     foreach ($idx['indices'] as $r) $by[$r['sym']] = $r;
-    $grp   = mp_md_get_groups();
     $world = array();
     foreach (($grp['world'] ?? array()) as $r) $world[$r['sym']] = $r;
     $comm  = array();
@@ -882,17 +885,23 @@ function mp_md_render_ticker() {
     });
     return h||'<span class="mp-ticker__item">Markets are quiet right now.</span>';
   }
-  function render(session){
-    if(session===curKey && DATA) return;
-    curKey=session;
-    T.classList.toggle('is-closed', session==='closed');
-    if(LABEL) LABEL.textContent=BADGE[session]||BADGE.closed;
-    TRACK.innerHTML='<span class="mp-ticker__half">'+half(session,false)+'</span>'
-                   +'<span class="mp-ticker__half" aria-hidden="true">'+half(session,true)+'</span>';
+  function setDuration(){
     requestAnimationFrame(function(){
-      var w=(TRACK.firstChild&&TRACK.firstChild.getBoundingClientRect().width)||1200;
+      var w=(TRACK.firstElementChild&&TRACK.firstElementChild.getBoundingClientRect().width)||1200;
       TRACK.style.setProperty('--mp-tick-duration',Math.max(18,Math.round(w/SPEED))+'s');
     });
+  }
+  function render(session){
+    // Update the badge label to match the client's real session.
+    T.classList.toggle('is-closed', session==='closed');
+    if(LABEL) LABEL.textContent=BADGE[session]||BADGE.closed;
+    // Without fetched data, keep the server-rendered headlines - just size the loop.
+    if(!DATA){ setDuration(); return; }
+    if(session===curKey) return;
+    curKey=session;
+    TRACK.innerHTML='<span class="mp-ticker__half">'+half(session,false)+'</span>'
+                   +'<span class="mp-ticker__half" aria-hidden="true">'+half(session,true)+'</span>';
+    setDuration();
   }
   function tick(){
     var active=sessionsNow();
@@ -907,7 +916,8 @@ function mp_md_render_ticker() {
       .then(function(d){ if(d&&d.sessions){ DATA=d; curKey=''; tick(); } })
       .catch(function(){});
   }
-  load();
+  tick();          // size + label the server-rendered bar immediately
+  load();          // then swap in fresh, session-matched headlines
   setInterval(load,180000);
   setInterval(tick,60000);
 }());
