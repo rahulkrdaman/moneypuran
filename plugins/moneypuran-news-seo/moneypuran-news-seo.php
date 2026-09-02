@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.1.1
+ * Version: 1.1.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -434,11 +434,14 @@ add_action('wp_head', function () {
 add_action('wp_footer', function () {
     if (is_admin() || is_feed()) return;
     $links = array(
-        'About'              => '/about-us/',
-        'Editorial Policy'   => '/editorial-policy/',
-        'Corrections'        => '/corrections-policy/',
+        'About'               => '/about-us/',
+        'Editorial Policy'    => '/editorial-policy/',
+        'Corrections'         => '/corrections-policy/',
         'Ownership & Funding' => '/ownership-and-funding/',
-        'Privacy Policy'     => '/privacy-policy/',
+        'Advertising'         => '/advertising-disclosure/',
+        'Disclaimer'          => '/disclaimer/',
+        'Privacy Policy'      => '/privacy-policy/',
+        'Terms'              => '/terms/',
         'Contact'            => '/contact/',
     );
     $out = array();
@@ -448,10 +451,12 @@ add_action('wp_footer', function () {
     echo '<div class="mp-policy-bar" style="text-align:center;font-size:13px;line-height:2;'
        . 'padding:14px 12px;background:#0b0f14;color:#9aa7b4;border-top:1px solid #1c2733">'
        . implode(' <span style="opacity:.4">&middot;</span> ', $out)
-       . '<div style="margin-top:6px;opacity:.75;max-width:760px;margin-left:auto;margin-right:auto">'
+       . '<div style="margin-top:6px;opacity:.75;max-width:820px;margin-left:auto;margin-right:auto">'
        . 'MoneyPuran publishes business &amp; markets news and education. Nothing on this site is '
-       . 'investment advice or a recommendation to buy or sell any security. &copy; ' . esc_html(date('Y')) . ' '
-       . esc_html(MP_NEWS_PUBLICATION) . '</div></div>'
+       . 'investment advice or a recommendation to buy or sell any security. Ads are served by Google; see '
+       . '<a href="' . esc_url(home_url('/privacy-policy/')) . '">Privacy Policy</a> and '
+       . '<a href="https://policies.google.com/technologies/partner-sites" rel="nofollow noopener" target="_blank">how Google uses data</a>. '
+       . '&copy; ' . esc_html(date('Y')) . ' ' . esc_html(MP_NEWS_PUBLICATION) . '</div></div>'
        . '<style>.mp-policy-bar a{color:#9aa7b4;text-decoration:none}.mp-policy-bar a:hover{color:#fff}</style>';
 }, 99);
 
