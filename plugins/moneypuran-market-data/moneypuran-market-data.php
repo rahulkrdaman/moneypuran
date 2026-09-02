@@ -2,27 +2,30 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) for the theme's index bar and the "Live Markets" stock widget. Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
 
 if (!defined('ABSPATH')) exit;
 
-const MP_MD_CACHE_KEY   = 'mp_md_snapshot_v1';
-const MP_MD_LOCK_KEY    = 'mp_md_lock_v1';
-const MP_MD_TTL         = 75;   // seconds a snapshot is considered fresh
-const MP_MD_HARD_TTL    = 1800; // keep a stale snapshot this long as a fallback
-const MP_MD_HTTP_BUDGET = 12;   // total seconds we'll spend fetching per refresh
+/* Split caches: the index bar is small + polled often; the stock list is bigger. */
+const MP_MD_IDX_KEY   = 'mp_md_idx_v2';
+const MP_MD_STK_KEY   = 'mp_md_stk_v2';
+const MP_MD_LOCK_IDX  = 'mp_md_lock_idx_v2';
+const MP_MD_LOCK_STK  = 'mp_md_lock_stk_v2';
+
+const MP_MD_IDX_SOFT  = 10;    // index bar: fresh for 10s
+const MP_MD_STK_SOFT  = 45;    // stock list: fresh for 45s
+const MP_MD_HARD_TTL  = 1800;  // keep a stale copy up to 30 min as a fallback
+const MP_MD_BUDGET    = 12;    // max seconds spent fetching per refresh
 
 /* ─────────────────────────── Symbol universe ─────────────────────────── */
 
-/** Header index bar — must match markets.js INDEX_MAP `sym` values. */
 function mp_md_index_symbols() {
     return array('^BSESN', '^NSEI', '^NSEBANK', 'INR=X', 'GC=F', 'CL=F', 'BTC-USD');
 }
 
-/** "Live Markets" widget — NSE large caps (Yahoo needs the .NS suffix). */
 function mp_md_stock_map() {
     return array(
         'RELIANCE' => 'Reliance Industries', 'TCS' => 'Tata Consultancy Services',
@@ -71,111 +74,116 @@ function mp_md_yahoo_one($symbol) {
         'volume'   => isset($m['regularMarketVolume'])  ? (int) $m['regularMarketVolume'] : null,
         'w52_high' => isset($m['fiftyTwoWeekHigh']) ? round((float) $m['fiftyTwoWeekHigh'], 2) : null,
         'w52_low'  => isset($m['fiftyTwoWeekLow'])  ? round((float) $m['fiftyTwoWeekLow'], 2)  : null,
+        'state'    => $m['marketState'] ?? null,   // REGULAR | PRE | POST | CLOSED
         'asOf'     => isset($m['regularMarketTime']) ? gmdate('c', (int) $m['regularMarketTime']) : gmdate('c'),
     );
 }
 
-/**
- * Build a full snapshot. Bounded by MP_MD_HTTP_BUDGET so a slow upstream can't
- * hang a page — whatever we have when the budget runs out is what we cache.
- */
-function mp_md_build_snapshot() {
-    $deadline = microtime(true) + MP_MD_HTTP_BUDGET;
-    $out = array('indices' => array(), 'stocks' => array(), 'asOf' => gmdate('c'), 'partial' => false);
+/* ─────────────────────────── Index snapshot ─────────────────────────── */
 
+function mp_md_build_indices() {
+    $deadline = microtime(true) + MP_MD_BUDGET;
+    $out = array('indices' => array(), 'state' => 'UNKNOWN', 'asOf' => gmdate('c'));
     foreach (mp_md_index_symbols() as $sym) {
-        if (microtime(true) > $deadline) { $out['partial'] = true; break; }
+        if (microtime(true) > $deadline) break;
         $q = mp_md_yahoo_one($sym);
-        if ($q) $out['indices'][$sym] = array('sym' => $sym, 'price' => $q['price'], 'chgPct' => $q['chgPct']);
+        if (!$q) continue;
+        $out['indices'][$sym] = array(
+            'sym' => $sym, 'price' => $q['price'], 'chgPct' => $q['chgPct'], 'change' => $q['change'],
+        );
+        if ($sym === '^NSEI' && $q['state']) $out['state'] = $q['state'];
     }
+    return $out;
+}
 
+function mp_md_get_indices() {
+    $snap = get_transient(MP_MD_IDX_KEY);
+    $age  = is_array($snap) && !empty($snap['_at']) ? (time() - $snap['_at']) : PHP_INT_MAX;
+    if (is_array($snap) && $age < MP_MD_IDX_SOFT) return $snap;
+
+    if (!get_transient(MP_MD_LOCK_IDX)) {
+        set_transient(MP_MD_LOCK_IDX, 1, MP_MD_BUDGET + 3);
+        $fresh = mp_md_build_indices();
+        delete_transient(MP_MD_LOCK_IDX);
+        if (!empty($fresh['indices'])) {
+            $fresh['_at'] = time();
+            set_transient(MP_MD_IDX_KEY, $fresh, MP_MD_HARD_TTL);
+            return $fresh;
+        }
+    }
+    return is_array($snap) ? $snap : array('indices' => array(), 'state' => 'UNKNOWN', 'asOf' => gmdate('c'));
+}
+
+/* ─────────────────────────── Stock snapshot ─────────────────────────── */
+
+function mp_md_build_stocks() {
+    $deadline = microtime(true) + MP_MD_BUDGET;
+    $out = array('stocks' => array(), 'asOf' => gmdate('c'));
     foreach (mp_md_stock_map() as $sym => $name) {
-        if (microtime(true) > $deadline) { $out['partial'] = true; break; }
+        if (microtime(true) > $deadline) break;
         $q = mp_md_yahoo_one($sym . '.NS');
         if (!$q) continue;
         $out['stocks'][$sym] = array(
-            'symbol'     => $sym,
-            'name'       => $name,
-            'exchange'   => 'NSE',
-            'price'      => $q['price'],
-            'change'     => $q['change'],
-            'change_pct' => $q['chgPct'],
-            'is_up'      => $q['chgPct'] !== null ? $q['chgPct'] >= 0 : true,
-            'open'       => $q['prev'],
-            'high'       => $q['high'],
-            'low'        => $q['low'],
-            'volume'     => $q['volume'],
-            'w52_high'   => $q['w52_high'],
-            'w52_low'    => $q['w52_low'],
-            'updated_at' => $q['asOf'],
-            'data_source'=> 'yahoo',
+            'symbol' => $sym, 'name' => $name, 'exchange' => 'NSE',
+            'price' => $q['price'], 'change' => $q['change'], 'change_pct' => $q['chgPct'],
+            'is_up' => $q['chgPct'] !== null ? $q['chgPct'] >= 0 : true,
+            'open' => $q['prev'], 'high' => $q['high'], 'low' => $q['low'], 'volume' => $q['volume'],
+            'w52_high' => $q['w52_high'], 'w52_low' => $q['w52_low'],
+            'updated_at' => $q['asOf'], 'data_source' => 'yahoo',
         );
     }
     return $out;
 }
 
-/**
- * Return the current snapshot, refreshing if stale. A short lock prevents a
- * cache-miss stampede (only one request does the upstream work).
- */
-function mp_md_get_snapshot() {
-    $snap = get_transient(MP_MD_CACHE_KEY);
-    $age  = is_array($snap) && !empty($snap['_cachedAt']) ? (time() - $snap['_cachedAt']) : PHP_INT_MAX;
+function mp_md_get_stocks() {
+    $snap = get_transient(MP_MD_STK_KEY);
+    $age  = is_array($snap) && !empty($snap['_at']) ? (time() - $snap['_at']) : PHP_INT_MAX;
+    if (is_array($snap) && $age < MP_MD_STK_SOFT) return $snap;
 
-    if (is_array($snap) && $age < MP_MD_TTL) return $snap;
-
-    // stale or missing → try to refresh, but don't let two requests both fetch
-    if (!get_transient(MP_MD_LOCK_KEY)) {
-        set_transient(MP_MD_LOCK_KEY, 1, MP_MD_HTTP_BUDGET + 5);
-        $fresh = mp_md_build_snapshot();
-        delete_transient(MP_MD_LOCK_KEY);
-        if (!empty($fresh['indices']) || !empty($fresh['stocks'])) {
-            $fresh['_cachedAt'] = time();
-            set_transient(MP_MD_CACHE_KEY, $fresh, MP_MD_HARD_TTL);
+    if (!get_transient(MP_MD_LOCK_STK)) {
+        set_transient(MP_MD_LOCK_STK, 1, MP_MD_BUDGET + 3);
+        $fresh = mp_md_build_stocks();
+        delete_transient(MP_MD_LOCK_STK);
+        if (!empty($fresh['stocks'])) {
+            $fresh['_at'] = time();
+            set_transient(MP_MD_STK_KEY, $fresh, MP_MD_HARD_TTL);
             return $fresh;
         }
     }
-    // couldn't refresh — serve whatever stale copy we have (may be null)
-    return is_array($snap) ? $snap : array('indices' => array(), 'stocks' => array(), 'asOf' => gmdate('c'));
+    return is_array($snap) ? $snap : array('stocks' => array(), 'asOf' => gmdate('c'));
 }
 
-// Warm the cache in the background so visitors rarely wait on the upstream.
+/* ─────────────────────────── Background warm-up ─────────────────────────── */
+
 add_action('mp_md_cron_refresh', function () {
-    delete_transient(MP_MD_LOCK_KEY);
-    $fresh = mp_md_build_snapshot();
-    if (!empty($fresh['indices']) || !empty($fresh['stocks'])) {
-        $fresh['_cachedAt'] = time();
-        set_transient(MP_MD_CACHE_KEY, $fresh, MP_MD_HARD_TTL);
-    }
+    delete_transient(MP_MD_LOCK_IDX);
+    delete_transient(MP_MD_LOCK_STK);
+    $i = mp_md_build_indices();
+    if (!empty($i['indices'])) { $i['_at'] = time(); set_transient(MP_MD_IDX_KEY, $i, MP_MD_HARD_TTL); }
+    $s = mp_md_build_stocks();
+    if (!empty($s['stocks'])) { $s['_at'] = time(); set_transient(MP_MD_STK_KEY, $s, MP_MD_HARD_TTL); }
 });
 add_action('init', function () {
     if (!wp_next_scheduled('mp_md_cron_refresh')) {
-        wp_schedule_event(time() + 30, 'mp_md_2min', 'mp_md_cron_refresh');
+        wp_schedule_event(time() + 20, 'mp_md_1min', 'mp_md_cron_refresh');
     }
 });
 add_filter('cron_schedules', function ($s) {
-    $s['mp_md_2min'] = array('interval' => 120, 'display' => 'Every 2 minutes');
+    $s['mp_md_1min'] = array('interval' => 60, 'display' => 'Every minute');
     return $s;
 });
 register_deactivation_hook(__FILE__, function () {
     wp_clear_scheduled_hook('mp_md_cron_refresh');
-    delete_transient(MP_MD_CACHE_KEY);
-    delete_transient(MP_MD_LOCK_KEY);
+    foreach (array(MP_MD_IDX_KEY, MP_MD_STK_KEY, MP_MD_LOCK_IDX, MP_MD_LOCK_STK) as $k) delete_transient($k);
 });
 
-/* ─────────────────────────── AJAX handlers (theme) ─────────────────────────── */
+/* ─────────────────────────── AJAX handlers (theme, back-compat) ─────────────────────────── */
 
-/**
- * Take over the theme's two AJAX actions with real data. Registered for both
- * logged-in and anonymous visitors. We remove any prior handlers first so the
- * theme's (failing, nonce-gated) versions don't win.
- */
 add_action('wp_loaded', function () {
-    remove_all_actions('wp_ajax_mp_get_market_indices');
-    remove_all_actions('wp_ajax_nopriv_mp_get_market_indices');
-    remove_all_actions('wp_ajax_mps_get_top_stocks');
-    remove_all_actions('wp_ajax_nopriv_mps_get_top_stocks');
-
+    foreach (array('mp_get_market_indices', 'mps_get_top_stocks') as $a) {
+        remove_all_actions('wp_ajax_' . $a);
+        remove_all_actions('wp_ajax_nopriv_' . $a);
+    }
     add_action('wp_ajax_mp_get_market_indices', 'mp_md_ajax_indices');
     add_action('wp_ajax_nopriv_mp_get_market_indices', 'mp_md_ajax_indices');
     add_action('wp_ajax_mps_get_top_stocks', 'mp_md_ajax_stocks');
@@ -183,99 +191,111 @@ add_action('wp_loaded', function () {
 }, 99);
 
 function mp_md_ajax_indices() {
-    $snap = mp_md_get_snapshot();
-    wp_send_json_success(array_values($snap['indices'] ?? array()));
+    wp_send_json_success(array_values(mp_md_get_indices()['indices']));
 }
 
 function mp_md_ajax_stocks() {
-    $filter = isset($_REQUEST['filter']) ? sanitize_key($_REQUEST['filter']) : 'trending';
-    $snap = mp_md_get_snapshot();
-    $stocks = array_values($snap['stocks'] ?? array());
+    wp_send_json_success(mp_md_sorted_stocks(isset($_REQUEST['filter']) ? sanitize_key($_REQUEST['filter']) : 'trending'));
+}
 
+function mp_md_sorted_stocks($filter) {
+    $stocks = array_values(mp_md_get_stocks()['stocks']);
     if ($filter === 'gainers') {
         usort($stocks, fn($a, $b) => ($b['change_pct'] ?? -99) <=> ($a['change_pct'] ?? -99));
     } elseif ($filter === 'losers') {
         usort($stocks, fn($a, $b) => ($a['change_pct'] ?? 99) <=> ($b['change_pct'] ?? 99));
     } else {
-        // "trending" = biggest absolute move
         usort($stocks, fn($a, $b) => abs($b['change_pct'] ?? 0) <=> abs($a['change_pct'] ?? 0));
     }
-    wp_send_json_success(array_slice($stocks, 0, 12));
+    return array_slice($stocks, 0, 12);
 }
 
-/* ─────────────────────────── REST endpoint ─────────────────────────── */
+/* ─────────────────────────── REST endpoint (primary; edge-cacheable) ─────────────────────────── */
 
 add_action('rest_api_init', function () {
     register_rest_route('mp/v1', '/markets', array(
         'methods'             => 'GET',
         'permission_callback' => '__return_true',
-        'callback'            => function () {
-            $snap = mp_md_get_snapshot();
-            return rest_ensure_response(array(
-                'indices' => array_values($snap['indices'] ?? array()),
-                'stocks'  => array_values($snap['stocks'] ?? array()),
-                'asOf'    => $snap['asOf'] ?? gmdate('c'),
-                'source'  => 'yahoo',
+        'args'                => array(
+            'only'   => array('default' => 'all'),
+            'filter' => array('default' => 'trending'),
+        ),
+        'callback' => function (WP_REST_Request $req) {
+            $only = $req->get_param('only');
+            $idx  = mp_md_get_indices();
+            $body = array(
+                'indices' => array_values($idx['indices']),
+                'state'   => $idx['state'] ?? 'UNKNOWN',
+                'asOf'    => gmdate('c'),
+                'source'  => 'Yahoo Finance',
                 'note'    => 'Prices may be delayed. Not investment advice.',
-            ));
+            );
+            if ($only !== 'indices') {
+                $body['stocks'] = mp_md_sorted_stocks($req->get_param('filter'));
+            }
+            $resp = rest_ensure_response($body);
+            // Let LiteSpeed / the browser reuse a response for a few seconds so a
+            // fast poll from many visitors is one PHP hit, not N.
+            $resp->header('Cache-Control', 'public, max-age=6, s-maxage=8, stale-while-revalidate=30');
+            return $resp;
         },
     ));
 });
 
-/* ─────────────────────────── Neutralise the fake analyser ─────────────────────────── *
- * The "MoneyPuran Setup & Stock Analyzer" plugin's /moneypuran/v1/top-stocks
- * returns simulated prices AND fabricated "STRONG BUY" trade ideas with targets
- * and stop-losses. Rewrite that response: real prices where we have them, and
- * replace the invented signal/trade-idea with a factual momentum label.
- * ------------------------------------------------------------------ */
+/* ─────────────────────────── Front-end: flash animation + LIVE dot ─────────────────────────── */
+
+add_action('wp_head', function () {
+    ?>
+<style id="mp-md-live">
+@keyframes mpMdFlashUp   { 0%{background:rgba(22,163,74,.28)} 100%{background:transparent} }
+@keyframes mpMdFlashDown { 0%{background:rgba(220,38,38,.28)} 100%{background:transparent} }
+.mp-md-flash-up   { animation: mpMdFlashUp   .9s ease-out; border-radius:3px; }
+.mp-md-flash-down { animation: mpMdFlashDown .9s ease-out; border-radius:3px; }
+.mp-live-dot{ display:inline-block; width:7px; height:7px; border-radius:50%; background:#16a34a;
+  margin-right:5px; vertical-align:middle; animation:mpMdPulse 1.6s infinite; }
+@keyframes mpMdPulse { 0%{box-shadow:0 0 0 0 rgba(22,163,74,.55)} 70%{box-shadow:0 0 0 7px rgba(22,163,74,0)} 100%{box-shadow:0 0 0 0 rgba(22,163,74,0)} }
+.mp-live-meta{ font-size:11px; color:var(--mp-muted,#6b7280); white-space:nowrap; }
+.mp-live-dot.mp-live-off{ background:#9ca3af; animation:none; box-shadow:none; }
+</style>
+    <?php
+});
+
+/* ─────────────────────────── Neutralise the fake analyser ─────────────────────────── */
+
 add_filter('rest_post_dispatch', function ($response, $server, $request) {
     if (strpos($request->get_route(), '/moneypuran/v1/top-stocks') === false) return $response;
     $data = $response->get_data();
     if (!is_array($data)) return $response;
-
-    $snap = mp_md_get_snapshot();
-    $real = $snap['stocks'] ?? array();
+    $real = mp_md_get_stocks()['stocks'];
 
     foreach ($data as &$row) {
         if (!is_array($row) || empty($row['symbol'])) continue;
         $sym = $row['symbol'];
         if (isset($real[$sym])) {
             $r = $real[$sym];
-            $row['price']       = $r['price'];
-            $row['change']      = $r['change'];
-            $row['change_pct']  = $r['change_pct'];
-            $row['is_up']       = $r['is_up'];
-            $row['open']        = $r['open'] ?? $row['open'] ?? null;
-            $row['high']        = $r['high'] ?? null;
-            $row['low']         = $r['low'] ?? null;
-            $row['volume']      = $r['volume'] ?? null;
-            $row['w52_high']    = $r['w52_high'] ?? $row['w52_high'] ?? null;
-            $row['w52_low']     = $r['w52_low'] ?? $row['w52_low'] ?? null;
-            $row['updated_at']  = $r['updated_at'];
-            $row['data_source'] = 'yahoo';
+            $row['price'] = $r['price']; $row['change'] = $r['change']; $row['change_pct'] = $r['change_pct'];
+            $row['is_up'] = $r['is_up']; $row['open'] = $r['open']; $row['high'] = $r['high'];
+            $row['low'] = $r['low']; $row['volume'] = $r['volume'];
+            $row['w52_high'] = $r['w52_high']; $row['w52_low'] = $r['w52_low'];
+            $row['updated_at'] = $r['updated_at']; $row['data_source'] = 'yahoo';
         }
-        // strip the fabricated recommendation layer
         $pct = $row['change_pct'] ?? 0;
         $row['signal_label'] = $pct > 1.5 ? 'Bullish' : ($pct < -1.5 ? 'Bearish' : 'Neutral');
         $row['signal_color'] = $pct > 1.5 ? 'green' : ($pct < -1.5 ? 'red' : 'gray');
         unset($row['signal'], $row['score'], $row['momentum'], $row['technical'],
-              $row['rank_reason'], $row['buy_target'], $row['stop_loss']);
+              $row['rank_reason'], $row['buy_target'], $row['stop_loss'], $row['news_snippets']);
         if (isset($row['free_analysis']) && is_array($row['free_analysis'])) {
             $name = $row['name'] ?? $sym;
             $price = number_format((float) ($row['price'] ?? 0), 2);
             $dir = $pct >= 0 ? 'up' : 'down';
             $row['free_analysis'] = array(
-                'summary' => sprintf(
-                    '%s (%s) is trading at &#8377;%s, %s %s%% today. Prices via Yahoo Finance and may be delayed.',
-                    esc_html($name), esc_html($sym), $price, $dir, number_format(abs($pct), 2)
-                ),
+                'summary' => sprintf('%s (%s) is trading at &#8377;%s, %s %s%% today. Prices via Yahoo Finance and may be delayed.',
+                    esc_html($name), esc_html($sym), $price, $dir, number_format(abs($pct), 2)),
                 'trade_idea' => 'MoneyPuran does not publish buy/sell targets. This is market data, not investment advice.',
             );
         }
-        unset($row['news_snippets']); // these were invented too
     }
     unset($row);
-
     $response->set_data($data);
     return $response;
 }, 10, 3);
