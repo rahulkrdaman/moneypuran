@@ -96,7 +96,7 @@ export async function snapshot(group) {
       title: `US stock market today: S&P 500, Dow and Nasdaq close (${date})`,
       date,
       text:
-        `US MARKET DATA — close of ${date} (levels via Yahoo Finance).\n` +
+        `US MARKET DATA — close of ${date}.\n` +
         idx.map(line).join("\n") +
         `\n\nThese are index levels and percentage moves only; no reasons, forecasts or ` +
         `analyst commentary are supplied in this data.`,
@@ -116,7 +116,7 @@ export async function snapshot(group) {
       title: `Indian stock market today: Sensex and Nifty 50 close (${date})`,
       date,
       text:
-        `INDIAN MARKET DATA — close of ${date} (levels via Yahoo Finance).\n` +
+        `INDIAN MARKET DATA — close of ${date}.\n` +
         idx.map(line).join("\n") +
         `\n\nThese are index levels and percentage moves only; no reasons, forecasts or ` +
         `broker commentary are supplied in this data.`,
@@ -141,7 +141,7 @@ export async function snapshot(group) {
       title: `Crypto and commodities today: Bitcoin, gold and oil (${date})`,
       date,
       text:
-        `CRYPTO & COMMODITIES DATA — ${date} (crypto via CoinGecko, commodities via Yahoo Finance).\n` +
+        `CRYPTO & COMMODITIES DATA — ${date}.\n` +
         (cryptoLines.length ? "Crypto (24h):\n" + cryptoLines.join("\n") + "\n\n" : "") +
         (comm.length ? "Commodities & FX:\n" + comm.map(line).join("\n") : "") +
         `\n\nPrices and percentage moves only; no reasons, forecasts or analyst commentary ` +

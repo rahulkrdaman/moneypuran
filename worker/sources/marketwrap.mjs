@@ -1,5 +1,5 @@
 // Daily "market wrap" source — NOT a feed. It synthesises up to three items a day
-// from live public price data (Yahoo Finance + CoinGecko, no API key) and lets the
+// from live public price data (no API key) and lets the
 // normal article writer turn each into a factual recap:
 //
 //   us-markets           — after the US close (weekdays)
@@ -20,7 +20,7 @@ const GATES = {
 };
 
 export const marketwrap = {
-  name: "MoneyPuran market data (Yahoo Finance, CoinGecko)",
+  name: "MoneyPuran market data",
   id: "marketwrap",
 
   async list() {
