@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.3.1
+ * Version: 1.3.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -886,10 +886,14 @@ function mp_md_render_ticker() {
     return h||'<span class="mp-ticker__item">Markets are quiet right now.</span>';
   }
   function setDuration(){
-    requestAnimationFrame(function(){
-      var w=(TRACK.firstElementChild&&TRACK.firstElementChild.getBoundingClientRect().width)||1200;
-      TRACK.style.setProperty('--mp-tick-duration',Math.max(18,Math.round(w/SPEED))+'s');
-    });
+    var apply=function(){
+      var el=TRACK.firstElementChild; if(!el) return;
+      var w=el.getBoundingClientRect().width || el.scrollWidth || 1200;
+      if(w>40) TRACK.style.setProperty('--mp-tick-duration',Math.max(18,Math.round(w/SPEED))+'s');
+    };
+    apply();
+    if(window.requestAnimationFrame) requestAnimationFrame(apply);
+    setTimeout(apply,300);
   }
   function render(session){
     // Update the badge label to match the client's real session.
@@ -920,6 +924,8 @@ function mp_md_render_ticker() {
   load();          // then swap in fresh, session-matched headlines
   setInterval(load,180000);
   setInterval(tick,60000);
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden){ setDuration(); tick(); } });
+  window.addEventListener('resize',function(){ clearTimeout(window.__mpTickRz); window.__mpTickRz=setTimeout(setDuration,200); });
 }());
 </script>
     <?php
