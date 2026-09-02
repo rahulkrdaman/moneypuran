@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -288,10 +288,12 @@ function mp_md_ajax_stocks() {
 }
 function mp_md_sorted_stocks($filter) {
     $stocks = array_values(mp_md_get_stocks()['stocks']);
-    if ($filter === 'gainers') {
+    if ($filter === 'gainers' || $filter === 'momentum' || $filter === 'buy') {
         usort($stocks, fn($a, $b) => ($b['change_pct'] ?? -99) <=> ($a['change_pct'] ?? -99));
     } elseif ($filter === 'losers') {
         usort($stocks, fn($a, $b) => ($a['change_pct'] ?? 99) <=> ($b['change_pct'] ?? 99));
+    } elseif ($filter === 'volume') {
+        usort($stocks, fn($a, $b) => ((int) ($b['volume'] ?? 0)) <=> ((int) ($a['volume'] ?? 0)));
     } else {
         usort($stocks, fn($a, $b) => abs($b['change_pct'] ?? 0) <=> abs($a['change_pct'] ?? 0));
     }
@@ -315,6 +317,8 @@ add_action('rest_api_init', function () {
             if ($only === 'dashboard') {
                 $body = array_merge($body, mp_md_get_groups());
                 unset($body['_at']);
+            } elseif ($only === 'stocks') {
+                $body['stocks'] = mp_md_sorted_stocks($req->get_param('filter'));
             } else {
                 $idx = mp_md_get_indices();
                 $body['indices'] = array_values($idx['indices']);
@@ -386,23 +390,35 @@ add_shortcode('mp_markets_dashboard', function () {
   <p class="mp-md-disclaimer">Market data is provided for information only and may be delayed. Nothing here is investment advice.</p>
 </section>
 <style>
-.mp-md-dashboard{margin:28px 0}
+/* Theme-aware: uses the moneypuran-theme tokens (--mp-surface/--mp-ink/--mp-muted/--mp-border)
+   with light fallbacks, plus an explicit dark-mode block for safety. */
+.mp-md-dashboard{margin:28px 0;color:var(--mp-ink,#0f172a)}
 .mp-md-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px}
-.mp-md-asof{font-size:11px;color:var(--mp-muted,#6b7280)}
+.mp-md-asof{font-size:11px;color:var(--mp-muted,#64748b)}
 .mp-md-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
-.mp-md-card{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-card,#fff)}
-.mp-md-card-title{font-size:13px;font-weight:700;margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase;color:var(--mp-muted,#6b7280)}
-.mp-md-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--mp-border,#f1f1f1);font-size:13px}
+.mp-md-card,.mp-md-bullion{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
+.mp-md-card-title{font-size:13px;font-weight:700;margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase;color:var(--mp-muted,#64748b)}
+.mp-md-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--mp-border,#eef1f4);font-size:13px}
 .mp-md-row:first-child{border-top:0}
-.mp-md-label{color:var(--mp-fg,#111827)}
-.mp-md-price{font-variant-numeric:tabular-nums;font-weight:600}
+.mp-md-label{color:var(--mp-ink,#0f172a)}
+.mp-md-price{font-variant-numeric:tabular-nums;font-weight:600;color:var(--mp-ink,#0f172a)}
 .mp-md-chg{font-variant-numeric:tabular-nums;font-weight:600;min-width:62px;text-align:right}
 .mp-md-up{color:#16a34a}.mp-md-dn{color:#dc2626}
-.mp-md-bullion{margin-top:16px;border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-card,#fff)}
-.mp-md-bullion-row{display:flex;flex-wrap:wrap;gap:16px;font-size:14px}
+.mp-md-bullion{margin-top:16px}
+.mp-md-bullion-row{display:flex;flex-wrap:wrap;gap:16px;font-size:14px;color:var(--mp-ink,#0f172a)}
 .mp-md-bullion-row strong{color:var(--mp-brand,#1d4ed8)}
-.mp-md-note{font-size:11px;color:var(--mp-muted,#6b7280);margin:8px 0 0}
-.mp-md-disclaimer{font-size:11px;color:var(--mp-muted,#6b7280);margin:12px 0 0}
+.mp-md-note,.mp-md-disclaimer{font-size:11px;color:var(--mp-muted,#64748b);margin:8px 0 0}
+.mp-md-disclaimer{margin-top:12px}
+html[data-theme="dark"] .mp-md-card,
+html[data-theme="dark"] .mp-md-bullion{background:#111827;border-color:rgba(255,255,255,.08);color:#f1f5f9}
+html[data-theme="dark"] .mp-md-label,
+html[data-theme="dark"] .mp-md-price,
+html[data-theme="dark"] .mp-md-bullion-row{color:#f1f5f9}
+html[data-theme="dark"] .mp-md-card-title,
+html[data-theme="dark"] .mp-md-note,
+html[data-theme="dark"] .mp-md-disclaimer,
+html[data-theme="dark"] .mp-md-asof{color:#94a3b8}
+html[data-theme="dark"] .mp-md-row{border-top-color:rgba(255,255,255,.08)}
 </style>
 <script>
 (function(){
@@ -450,6 +466,115 @@ add_action('wp_head', function () {
 </style>
     <?php
 });
+
+/* --------------------------- "Live Stock Analysis - Top 10" widget (#mpStockTool) ---------------------------
+   The theme's own stock-analyzer.js is not enqueued on the homepage and references an
+   undefined `mpData` object, so the widget sits on "Loading..." forever. We supply a
+   self-contained implementation that fills the existing markup with REAL Yahoo data
+   (no score/target/momentum theatre) from /wp-json/mp/v1/markets. */
+
+add_action('wp_footer', function () {
+    ?>
+<style id="mp-md-mpst">
+#mpStockTool .th-score,#mpStockTool .td-score{display:none}
+#mpStockTool .mpst-sb-item:nth-child(4),#mpStockTool .mpst-sb-item:nth-child(6){display:none}
+#mpStockTool .sig-bullish{color:#16a34a}#mpStockTool .sig-bearish{color:#dc2626}#mpStockTool .sig-neutral{color:#64748b}
+#mpStockTool .chg-up{color:#16a34a}#mpStockTool .chg-dn{color:#dc2626}
+html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
+</style>
+<script>
+(function(){
+  var W = document.getElementById('mpStockTool');
+  if (!W) return;
+  var REST = (location.origin||'') + '/wp-json/mp/v1/markets?only=stocks&filter=';
+  var currentFilter = 'trending';
+  var $ = function(id){ return document.getElementById(id); };
+
+  function inr(n){ return Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function vol(n){ n=Number(n)||0; if(n>=1e7) return (n/1e7).toFixed(2)+' Cr'; if(n>=1e5) return (n/1e5).toFixed(2)+' L'; return n.toLocaleString('en-IN'); }
+  function sigOf(p){ return p > 1.5 ? {l:'Bullish',c:'bullish'} : (p < -1.5 ? {l:'Bearish',c:'bearish'} : {l:'Neutral',c:'neutral'}); }
+
+  function rowHtml(s, i){
+    var up = (s.change_pct||0) >= 0, sg = sigOf(s.change_pct||0);
+    return '<tr>'
+      + '<td class="td-rank">'+(i+1)+'</td>'
+      + '<td class="td-stock"><strong>'+s.symbol+'</strong><span style="display:block;font-size:11px;opacity:.7">'+(s.name||'')+' &middot; '+(s.exchange||'NSE')+'</span></td>'
+      + '<td class="td-price">&#8377;'+inr(s.price)+'</td>'
+      + '<td class="td-change"><span class="chg-val '+(up?'chg-up':'chg-dn')+'">'+(up?'+':'')+Number(s.change_pct||0).toFixed(2)+'%</span></td>'
+      + '<td class="td-vol">'+vol(s.volume)+'</td>'
+      + '<td class="td-signal"><span class="sig-pill sig-'+sg.c+'">'+sg.l+'</span></td>'
+      + '<td class="td-score">&ndash;</td>'
+      + '<td class="td-action"><a href="'+(location.origin)+'/?s='+encodeURIComponent(s.symbol)+'" style="font-size:12px;font-weight:600">News &rarr;</a></td>'
+      + '</tr>';
+  }
+  function cardHtml(s, i){
+    var up = (s.change_pct||0) >= 0, sg = sigOf(s.change_pct||0);
+    return '<div class="mpst-card">'
+      + '<div class="mpst-card-top"><span class="mpst-card-rank">#'+(i+1)+'</span><strong>'+s.symbol+'</strong>'
+      + '<span class="chg-val '+(up?'chg-up':'chg-dn')+'">'+(up?'+':'')+Number(s.change_pct||0).toFixed(2)+'%</span></div>'
+      + '<div class="mpst-card-row"><span>&#8377;'+inr(s.price)+'</span>'
+      + '<span class="sig-pill sig-'+sg.c+'">'+sg.l+'</span>'
+      + '<span style="opacity:.7">Vol '+vol(s.volume)+'</span></div>'
+      + '<div class="mpst-card-reason" style="font-size:11px;opacity:.7">'+(s.name||'')+' &middot; via Yahoo Finance, delayed</div></div>';
+  }
+
+  function summary(list){
+    var b=0,n=0,d=0, volLeader=list[0]||{symbol:'-'}, maxV=-1;
+    list.forEach(function(s){
+      var p=s.change_pct||0;
+      if(p>1.5) b++; else if(p<-1.5) d++; else n++;
+      if((s.volume||0)>maxV){ maxV=s.volume||0; volLeader=s; }
+    });
+    var set=function(id,v){ var e=$(id); if(e) e.textContent=v; };
+    set('sbBullCount',b); set('sbNeutCount',n); set('sbBearCount',d);
+    set('sbVolLeader', volLeader.symbol || '-');
+    var bar=$('mpstSummaryBar'); if(bar) bar.style.display='';
+  }
+
+  function show(which){
+    ['mpstLoading','mpstError','mpstTable'].forEach(function(id){ var e=$(id); if(e) e.style.display = (id===which?'':'none'); });
+  }
+
+  window.mpstLoad = function(){
+    show('mpstLoading');
+    var src=$('mpstSource'); if(src) src.textContent='Loading...';
+    fetch(REST + encodeURIComponent(currentFilter), {headers:{'Accept':'application/json'}, credentials:'omit'})
+      .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function(d){
+        var list = (d && d.stocks) ? d.stocks.slice(0,10) : [];
+        if (!list.length) throw new Error('empty');
+        var tb = $('mpstTableBody'); if (tb) tb.innerHTML = list.map(rowHtml).join('');
+        var cc = $('mpstCards'); if (cc) cc.innerHTML = list.map(cardHtml).join('');
+        summary(list);
+        // relabel columns we repurposed
+        var vh = W.querySelector('.th-vol'); if (vh) vh.textContent = 'Volume';
+        show('mpstTable');
+        if (src) src.textContent = 'NSE - Yahoo Finance';
+        var t=$('mpstTime'); if(t) t.textContent = ' - ' + new Date().toLocaleTimeString();
+      })
+      .catch(function(){
+        show('mpstError');
+        var em=$('mpstErrorMsg'); if(em) em.textContent='Could not load market data. Please retry.';
+        if (src) src.textContent='Unavailable';
+      });
+  };
+  window.mpstFilter = function(f, btn){
+    currentFilter = f || 'trending';
+    var btns = W.querySelectorAll('.mpst-filter');
+    for (var i=0;i<btns.length;i++) btns[i].classList.remove('active');
+    if (btn) btn.classList.add('active');
+    window.mpstLoad();
+  };
+  window.mpstRefresh = function(){ window.mpstLoad(); };
+  window.mpstClosePanel = function(){ var p=$('mpstAnalysisPanel'); if(p) p.style.display='none'; };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', window.mpstLoad);
+  else window.mpstLoad();
+  setInterval(window.mpstLoad, 90000);
+}());
+</script>
+    <?php
+}, 20);
 
 /* --------------------------- Neutralise the fake analyser --------------------------- */
 
