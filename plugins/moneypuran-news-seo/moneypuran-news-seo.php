@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.6
+ * Version: 1.0.7
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -454,3 +454,34 @@ add_action('wp_footer', function () {
        . esc_html(MP_NEWS_PUBLICATION) . '</div></div>'
        . '<style>.mp-policy-bar a{color:#9aa7b4;text-decoration:none}.mp-policy-bar a:hover{color:#fff}</style>';
 }, 99);
+
+/* ------------------------------------------------------------------ *
+ * 7. Front-end performance + noise cleanup (platform hygiene).
+ *    - drop the wp-emoji script (the theme's topbar/nav emoji were
+ *      being swapped for dozens of remote s.w.org SVG requests,
+ *      which also kept the page from ever going network-idle);
+ *    - stop self-pingbacks (the News Desk's internal links were
+ *      generating a flood of pingback "comments").
+ * ------------------------------------------------------------------ */
+add_action('init', function () {
+    // wp-emoji
+    remove_action('wp_head', 'print_emoji_detection_script', 7);
+    remove_action('admin_print_scripts', 'print_emoji_detection_script');
+    remove_action('wp_print_styles', 'print_emoji_styles');
+    remove_action('admin_print_styles', 'print_emoji_styles');
+    remove_filter('the_content_feed', 'wp_staticize_emoji');
+    remove_filter('comment_text_rss', 'wp_staticize_emoji');
+    remove_filter('wp_mail', 'wp_staticize_emoji_for_email');
+    add_filter('tiny_mce_plugins', function ($plugins) {
+        return is_array($plugins) ? array_diff($plugins, array('wpemoji')) : array();
+    });
+    add_filter('emoji_svg_url', '__return_false');
+});
+
+// Don't ping ourselves when an article links to another MoneyPuran article.
+add_action('pre_ping', function (&$links) {
+    $home = home_url();
+    foreach ($links as $i => $l) {
+        if (strpos($l, $home) === 0) unset($links[$i]);
+    }
+});
