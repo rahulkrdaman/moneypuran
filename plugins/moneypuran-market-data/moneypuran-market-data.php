@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.2.2
+ * Version: 1.3.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -626,3 +626,293 @@ add_filter('rest_post_dispatch', function ($response, $server, $request) {
     $response->set_data($data);
     return $response;
 }, 10, 3);
+
+/* ============================================================================
+ * SESSION-AWARE NEWS TICKER  (v1.3.0)
+ * A thin header bar that scrolls market headlines for whichever session is
+ * live now - India equity / US equity / commodities - switching without a
+ * page reload. Rendered server-side for the current session (no CLS), then
+ * kept in sync client-side via /wp-json/mp/v1/ticker + an Intl-timezone
+ * session check. CSS transform animation only; pause on hover.
+ * ==========================================================================*/
+
+/** Active market sessions right now, highest priority first. */
+function mp_md_sessions($ist = null, $et = null) {
+    try {
+        if (!$ist) $ist = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
+        if (!$et)  $et  = new DateTime('now', new DateTimeZone('America/New_York'));
+    } catch (Exception $e) {
+        return array('closed');
+    }
+    $istWd = (int) $ist->format('N'); $istM = (int) $ist->format('G') * 60 + (int) $ist->format('i');
+    $etWd  = (int) $et->format('N');  $etM  = (int) $et->format('G')  * 60 + (int) $et->format('i');
+    $out = array();
+    if ($etWd  <= 5 && $etM  >= 570 && $etM  < 960)  $out[] = 'us';           // 09:30-16:00 ET
+    if ($istWd <= 5 && $istM >= 555 && $istM < 930)  $out[] = 'india';        // 09:15-15:30 IST
+    if ($istWd <= 5 && $istM >= 540 && $istM < 1410) $out[] = 'commodities';  // 09:00-23:30 IST (MCX)
+    return $out ? $out : array('closed');
+}
+
+function mp_md_ticker_cats() {
+    return array(
+        'india'       => 'indian-markets,stocks,ipos,earnings',
+        'us'          => 'us-markets,global-markets,economy,central-banks,regulation',
+        'commodities' => 'commodities,economy',
+        'closed'      => '',
+    );
+}
+
+/** Headlines + a live market summary line for each session. Cached 5 min. */
+function mp_md_ticker_data() {
+    $cached = get_transient('mp_md_ticker_v1');
+    if (is_array($cached)) return $cached;
+
+    $seen = array();
+    $pick = function ($slugs, $want = 8) use (&$seen) {
+        $items = array();
+        $args = array(
+            'post_type' => 'post', 'post_status' => 'publish',
+            'posts_per_page' => $want + 4, 'ignore_sticky_posts' => true, 'no_found_rows' => true,
+            'orderby' => 'date', 'order' => 'DESC',
+        );
+        if ($slugs) $args['category_name'] = $slugs;
+        $q = new WP_Query($args);
+        foreach ($q->posts as $p) {
+            if (isset($seen[$p->ID]) || count($items) >= $want) continue;
+            $seen[$p->ID] = 1;
+            $items[] = array(
+                'title' => html_entity_decode(get_the_title($p), ENT_QUOTES),
+                'url'   => get_permalink($p),
+            );
+        }
+        return $items;
+    };
+
+    $cats   = mp_md_ticker_cats();
+    $latest = $pick('', 10);
+    $sessions = array(
+        'india'       => $pick($cats['india'], 7),
+        'us'          => $pick($cats['us'], 7),
+        'commodities' => $pick($cats['commodities'], 6),
+        'closed'      => $latest,
+    );
+    foreach (array('india', 'us', 'commodities') as $k) {
+        if (count($sessions[$k]) < 5) {
+            foreach ($latest as $it) {
+                if (count($sessions[$k]) >= 6) break;
+                $dup = false;
+                foreach ($sessions[$k] as $x) if ($x['url'] === $it['url']) { $dup = true; break; }
+                if (!$dup) $sessions[$k][] = $it;
+            }
+        }
+    }
+
+    // Live market lines from the market-data caches.
+    $idx = mp_md_get_indices();
+    $by  = array();
+    foreach ($idx['indices'] as $r) $by[$r['sym']] = $r;
+    $grp   = mp_md_get_groups();
+    $world = array();
+    foreach (($grp['world'] ?? array()) as $r) $world[$r['sym']] = $r;
+    $comm  = array();
+    foreach (($grp['commodities'] ?? array()) as $r) $comm[$r['sym']] = $r;
+
+    $line = function ($rows) {
+        $parts = array();
+        foreach ($rows as $r) {
+            if (!$r || !isset($r['price'])) continue;
+            $pct   = isset($r['chgPct']) ? (float) $r['chgPct'] : 0;
+            $cls   = $pct >= 0 ? 'up' : 'dn';
+            $sign  = $pct >= 0 ? '+' : '';
+            $label = isset($r['label']) ? $r['label'] : '';
+            $parts[] = sprintf(
+                '<b>%s</b> %s <i class="%s">%s%.2f%%</i>',
+                esc_html($label),
+                number_format((float) $r['price'], ($r['price'] < 10 ? 4 : 2)),
+                $cls, $sign, $pct
+            );
+        }
+        return implode(' &nbsp;&middot;&nbsp; ', $parts);
+    };
+    $g = function ($src, $sym, $fallbackLabel = '') use ($by, $world, $comm) {
+        $pool = $src === 'idx' ? $by : ($src === 'world' ? $world : $comm);
+        if (isset($pool[$sym])) {
+            $r = $pool[$sym];
+            if (empty($r['label']) && $fallbackLabel) $r['label'] = $fallbackLabel;
+            return $r;
+        }
+        return null;
+    };
+
+    $market = array(
+        'india' => $line(array(
+            $g('idx', '^NSEI', 'NIFTY 50'), $g('idx', '^BSESN', 'SENSEX'),
+            $g('idx', '^NSEBANK', 'NIFTY BANK'), $g('idx', 'INR=X', 'USD/INR'),
+        )),
+        'us' => $line(array(
+            $g('world', '^GSPC'), $g('world', '^DJI'), $g('world', '^IXIC'),
+        )),
+        'commodities' => $line(array(
+            $g('comm', 'GC=F') ?: $g('idx', 'GC=F', 'Gold'),
+            $g('comm', 'SI=F'),
+            $g('comm', 'CL=F') ?: $g('idx', 'CL=F', 'Crude Oil'),
+            $g('comm', 'NG=F'),
+        )),
+    );
+    $market['closed'] = $market['us'] ?: $market['india'];
+
+    $data = array('sessions' => $sessions, 'market' => $market, 'asOf' => gmdate('c'));
+    set_transient('mp_md_ticker_v1', $data, 5 * MINUTE_IN_SECONDS);
+    return $data;
+}
+
+add_action('rest_api_init', function () {
+    register_rest_route('mp/v1', '/ticker', array(
+        'methods' => 'GET', 'permission_callback' => '__return_true',
+        'callback' => function () {
+            $d = mp_md_ticker_data();
+            $d['active'] = mp_md_sessions();
+            $resp = rest_ensure_response($d);
+            $resp->header('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=300');
+            return $resp;
+        },
+    ));
+});
+
+function mp_md_ticker_label($session) {
+    $map = array('india' => 'India Live', 'us' => 'US Live', 'commodities' => 'Commodities', 'closed' => 'Markets Closed');
+    return isset($map[$session]) ? $map[$session] : $map['closed'];
+}
+
+function mp_md_ticker_items_html($session, $data, $dup = false) {
+    $items = isset($data['sessions'][$session]) ? $data['sessions'][$session] : array();
+    $mkt   = isset($data['market'][$session]) ? $data['market'][$session] : '';
+    $tab   = $dup ? ' tabindex="-1"' : '';
+    $h = '';
+    if ($mkt !== '') {
+        $h .= '<span class="mp-ticker__mkt">' . $mkt . '</span><span class="mp-ticker__sep">&#9679;</span>';
+    }
+    foreach ($items as $it) {
+        $h .= '<a class="mp-ticker__item" href="' . esc_url($it['url']) . '"' . $tab . '>' . esc_html($it['title']) . '</a>'
+            . '<span class="mp-ticker__sep">&#9679;</span>';
+    }
+    if ($h === '') $h = '<span class="mp-ticker__item">Loading market headlines&hellip;</span>';
+    return $h;
+}
+
+/** Server-render the ticker for the session that is live right now. */
+function mp_md_render_ticker() {
+    if (is_admin() || is_feed() || is_embed()) return;
+    $data     = mp_md_ticker_data();
+    $sessions = mp_md_sessions();
+    $active   = $sessions[0];
+    $closed   = ($active === 'closed');
+    ?>
+<div class="mp-ticker<?php echo $closed ? ' is-closed' : ''; ?>" id="mpTicker" aria-label="Market news ticker">
+  <span class="mp-ticker__badge" id="mpTickerBadge">
+    <span class="mp-ticker__dot" aria-hidden="true"></span><span id="mpTickerLabel"><?php echo esc_html(mp_md_ticker_label($active)); ?></span>
+  </span>
+  <div class="mp-ticker__viewport">
+    <div class="mp-ticker__track" id="mpTickerTrack">
+      <span class="mp-ticker__half"><?php echo mp_md_ticker_items_html($active, $data, false); ?></span>
+      <span class="mp-ticker__half" aria-hidden="true"><?php echo mp_md_ticker_items_html($active, $data, true); ?></span>
+    </div>
+  </div>
+</div>
+<style id="mp-ticker-css">
+.mp-ticker{display:flex;align-items:stretch;height:34px;overflow:hidden;background:#0f172a;color:#dfe6ee;
+  border-bottom:1px solid rgba(255,255,255,.07);font-size:13px;line-height:1;position:relative;z-index:5}
+.mp-ticker__badge{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 12px;font-weight:700;font-size:11px;
+  letter-spacing:.05em;text-transform:uppercase;background:#0057ff;color:#fff;white-space:nowrap}
+.mp-ticker.is-closed .mp-ticker__badge{background:#475569}
+.mp-ticker__dot{width:7px;height:7px;border-radius:50%;background:#ff3b3b;box-shadow:0 0 0 0 rgba(255,59,59,.7);
+  animation:mpTickPulse 1.5s ease-out infinite}
+.mp-ticker.is-closed .mp-ticker__dot{background:#cbd5e1;animation:none;box-shadow:none}
+.mp-ticker__viewport{flex:1 1 auto;overflow:hidden;position:relative;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 22px,#000 calc(100% - 22px),transparent);
+          mask-image:linear-gradient(90deg,transparent,#000 22px,#000 calc(100% - 22px),transparent)}
+.mp-ticker__track{display:inline-flex;align-items:center;height:100%;white-space:nowrap;will-change:transform;
+  animation:mpTickScroll var(--mp-tick-duration,60s) linear infinite}
+.mp-ticker__viewport:hover .mp-ticker__track,.mp-ticker__track:focus-within{animation-play-state:paused}
+.mp-ticker__half{display:inline-flex;align-items:center;padding-left:16px}
+.mp-ticker__item{display:inline-flex;align-items:center;color:#dfe6ee;text-decoration:none;padding:0 6px}
+.mp-ticker__item:hover,.mp-ticker__item:focus{color:#7fb0ff;outline:none}
+.mp-ticker__sep{opacity:.28;padding:0 5px}
+.mp-ticker__mkt{color:#9aa7b4;padding:0 4px}
+.mp-ticker__mkt b{color:#e9eef5;font-weight:600}
+.mp-ticker__mkt i{font-style:normal}
+.mp-ticker__mkt i.up{color:#22c55e}.mp-ticker__mkt i.dn{color:#f87171}
+@keyframes mpTickScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@keyframes mpTickPulse{0%{box-shadow:0 0 0 0 rgba(255,59,59,.7)}70%{box-shadow:0 0 0 6px rgba(255,59,59,0)}100%{box-shadow:0 0 0 0 rgba(255,59,59,0)}}
+@media (prefers-reduced-motion:reduce){.mp-ticker__track{animation:none}.mp-ticker__viewport{overflow-x:auto}
+  .mp-ticker__half:last-child{display:none}}
+@media (max-width:600px){.mp-ticker{height:30px;font-size:12px}
+  .mp-ticker__badge{padding:0 8px;font-size:10px;gap:4px}.mp-ticker__dot{width:6px;height:6px}}
+</style>
+<script>
+(function(){
+  var T=document.getElementById('mpTicker'); if(!T) return;
+  var TRACK=document.getElementById('mpTickerTrack'), LABEL=document.getElementById('mpTickerLabel'),
+      SPEED=62, DATA=null, rotIdx=0, rotTimer=null, curKey='';
+  var BADGE={india:'India Live',us:'US Live',commodities:'Commodities',closed:'Markets Closed'};
+
+  function sessionsNow(){
+    var d=new Date();
+    function p(tz){
+      var o={};
+      new Intl.DateTimeFormat('en-US',{timeZone:tz,hour12:false,weekday:'short',hour:'2-digit',minute:'2-digit'})
+        .formatToParts(d).forEach(function(x){o[x.type]=x.value;});
+      var wd={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6}[o.weekday];
+      return {wd:wd,m:(parseInt(o.hour,10)%24)*60+parseInt(o.minute,10)};
+    }
+    var ist=p('Asia/Kolkata'), et=p('America/New_York'), s=[];
+    if(et.wd>=1&&et.wd<=5 && et.m>=570 && et.m<960)  s.push('us');
+    if(ist.wd>=1&&ist.wd<=5&&ist.m>=555&&ist.m<930)  s.push('india');
+    if(ist.wd>=1&&ist.wd<=5&&ist.m>=540&&ist.m<1410) s.push('commodities');
+    return s.length?s:['closed'];
+  }
+  function esc(s){var e=document.createElement('span');e.textContent=s;return e.innerHTML;}
+  function half(session,dup){
+    var d=DATA||{sessions:{},market:{}};
+    var items=(d.sessions&&d.sessions[session])||[], mkt=(d.market&&d.market[session])||'', h='';
+    if(mkt) h+='<span class="mp-ticker__mkt">'+mkt+'</span><span class="mp-ticker__sep">●</span>';
+    items.forEach(function(it){
+      h+='<a class="mp-ticker__item" href="'+it.url+'"'+(dup?' tabindex="-1"':'')+'>'+esc(it.title)+'</a>'
+        +'<span class="mp-ticker__sep">●</span>';
+    });
+    return h||'<span class="mp-ticker__item">Markets are quiet right now.</span>';
+  }
+  function render(session){
+    if(session===curKey && DATA) return;
+    curKey=session;
+    T.classList.toggle('is-closed', session==='closed');
+    if(LABEL) LABEL.textContent=BADGE[session]||BADGE.closed;
+    TRACK.innerHTML='<span class="mp-ticker__half">'+half(session,false)+'</span>'
+                   +'<span class="mp-ticker__half" aria-hidden="true">'+half(session,true)+'</span>';
+    requestAnimationFrame(function(){
+      var w=(TRACK.firstChild&&TRACK.firstChild.getBoundingClientRect().width)||1200;
+      TRACK.style.setProperty('--mp-tick-duration',Math.max(18,Math.round(w/SPEED))+'s');
+    });
+  }
+  function tick(){
+    var active=sessionsNow();
+    if(active.length>1){
+      if(!rotTimer) rotTimer=setInterval(function(){ rotIdx++; curKey=''; render(active[rotIdx%active.length]); },28000);
+    } else if(rotTimer){ clearInterval(rotTimer); rotTimer=null; rotIdx=0; }
+    render(active[rotIdx%active.length]);
+  }
+  function load(){
+    fetch((location.origin||'')+'/wp-json/mp/v1/ticker',{headers:{'Accept':'application/json'},credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){ if(d&&d.sessions){ DATA=d; curKey=''; tick(); } })
+      .catch(function(){});
+  }
+  load();
+  setInterval(load,180000);
+  setInterval(tick,60000);
+}());
+</script>
+    <?php
+}
+add_action('mp_news_ticker', 'mp_md_render_ticker');
+add_shortcode('mp_news_ticker', function () { ob_start(); mp_md_render_ticker(); return ob_get_clean(); });
