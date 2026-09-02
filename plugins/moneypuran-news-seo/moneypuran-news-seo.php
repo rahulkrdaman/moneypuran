@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.1.2
+ * Version: 1.1.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -635,7 +635,7 @@ add_filter('wp_robots', function ($robots) {
     $obj   = get_queried_object();
     $count = ($obj && isset($obj->count)) ? (int) $obj->count : 0;
     $thin  = is_search() || is_404() || is_author() || is_date()
-        || ((is_tag() || is_tax()) && $count < 3)
+        || ((is_category() || is_tag() || is_tax()) && $count < 3)
         || (is_paged() && (is_archive() || is_home()));
     if ($thin) {
         $robots['noindex'] = true;
@@ -644,3 +644,25 @@ add_filter('wp_robots', function ($robots) {
     }
     return $robots;
 }, 20);
+// Rank Math prints its own robots meta and ignores wp_robots on archives - mirror the rule there.
+add_filter('rank_math/frontend/robots', function ($robots) {
+    $obj   = get_queried_object();
+    $count = ($obj && isset($obj->count)) ? (int) $obj->count : 0;
+    $thin  = is_search() || is_404() || is_author() || is_date()
+        || ((is_category() || is_tag() || is_tax()) && $count < 3)
+        || (is_paged() && (is_archive() || is_home()));
+    if ($thin) {
+        $robots['index']  = 'noindex';
+        $robots['follow'] = 'follow';
+    }
+    return $robots;
+}, 20);
+
+/* List the Google-News sitemap inside Rank Math's sitemap index too. */
+add_filter('rank_math/sitemap/index', function ($xml) {
+    $entry = "\t<sitemap>\n"
+           . "\t\t<loc>" . esc_url(home_url('/news-sitemap.xml')) . "</loc>\n"
+           . "\t\t<lastmod>" . gmdate('c') . "</lastmod>\n"
+           . "\t</sitemap>\n";
+    return $entry . $xml;
+});
