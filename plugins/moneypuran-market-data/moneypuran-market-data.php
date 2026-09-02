@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.3.2
+ * Version: 1.3.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -789,12 +789,8 @@ function mp_md_ticker_label($session) {
 
 function mp_md_ticker_items_html($session, $data, $dup = false) {
     $items = isset($data['sessions'][$session]) ? $data['sessions'][$session] : array();
-    $mkt   = isset($data['market'][$session]) ? $data['market'][$session] : '';
-    $tab   = $dup ? ' tabindex="-1"' : '';
-    $h = '';
-    if ($mkt !== '') {
-        $h .= '<span class="mp-ticker__mkt">' . $mkt . '</span><span class="mp-ticker__sep">&#9679;</span>';
-    }
+    $tab   = $dup ? " tabindex=\"-1\"" : "";
+    $h = "";
     foreach ($items as $it) {
         $h .= '<a class="mp-ticker__item" href="' . esc_url($it['url']) . '"' . $tab . '>' . esc_html($it['title']) . '</a>'
             . '<span class="mp-ticker__sep">&#9679;</span>';
@@ -877,8 +873,7 @@ function mp_md_render_ticker() {
   function esc(s){var e=document.createElement('span');e.textContent=s;return e.innerHTML;}
   function half(session,dup){
     var d=DATA||{sessions:{},market:{}};
-    var items=(d.sessions&&d.sessions[session])||[], mkt=(d.market&&d.market[session])||'', h='';
-    if(mkt) h+='<span class="mp-ticker__mkt">'+mkt+'</span><span class="mp-ticker__sep">●</span>';
+    var items=(d.sessions&&d.sessions[session])||[], h="";
     items.forEach(function(it){
       h+='<a class="mp-ticker__item" href="'+it.url+'"'+(dup?' tabindex="-1"':'')+'>'+esc(it.title)+'</a>'
         +'<span class="mp-ticker__sep">●</span>';
