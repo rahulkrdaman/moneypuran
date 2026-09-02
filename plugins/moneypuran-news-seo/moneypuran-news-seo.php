@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.0.7
+ * Version: 1.1.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -485,3 +485,161 @@ add_action('pre_ping', function (&$links) {
         if (strpos($l, $home) === 0) unset($links[$i]);
     }
 });
+
+/* ============================================================================
+ * ADS & CONSENT  (Google Publisher Policy compliance)  - added v1.1.0
+ * Consent Mode v2 defaults, AdSense loader, a policy-safe ad-slot renderer,
+ * /ads.txt and thin-screen noindex. Everything ad-serving stays dormant until
+ * an AdSense Publisher ID is set (Settings > Reading, the MP_ADSENSE_PUB_ID
+ * constant, or the mp_adsense_pub_id filter).
+ * ==========================================================================*/
+
+function mp_ads_pub_id() {
+    $id = '';
+    if (defined('MP_ADSENSE_PUB_ID')) $id = (string) MP_ADSENSE_PUB_ID;
+    if (!$id) $id = (string) get_option('mp_adsense_pub_id', '');
+    $id = (string) apply_filters('mp_adsense_pub_id', $id);
+    $id = trim(preg_replace('/[^a-z0-9\-]/i', '', $id));
+    if ($id !== '' && strpos($id, 'pub-') !== 0) $id = 'pub-' . preg_replace('/^pub-?/', '', $id);
+    return $id;
+}
+function mp_ads_active() { return mp_ads_pub_id() !== ''; }
+function mp_ads_slot_id($slot) {
+    $map = apply_filters('mp_ads_slot_ids', array('header' => '', 'in_feed' => '', 'sidebar' => '', 'in_article' => ''));
+    return isset($map[$slot]) ? preg_replace('/\D/', '', (string) $map[$slot]) : '';
+}
+
+add_action('admin_init', function () {
+    register_setting('reading', 'mp_adsense_pub_id', array('type' => 'string', 'sanitize_callback' => 'sanitize_text_field'));
+    add_settings_field('mp_adsense_pub_id', 'AdSense Publisher ID', function () {
+        printf(
+            '<input type="text" name="mp_adsense_pub_id" value="%s" class="regular-text" placeholder="pub-XXXXXXXXXXXXXXXX" />'
+            . '<p class="description">From your approved Google AdSense account. Blank = all ad code stays off. '
+            . 'Ads never render on search, 404, attachment, thin or policy pages regardless.</p>',
+            esc_attr(get_option('mp_adsense_pub_id', ''))
+        );
+    }, 'reading');
+});
+
+/* Consent Mode v2 - denied by default; Google's certified CMP (AdSense > Privacy
+   & messaging) updates it once the visitor chooses. */
+add_action('wp_head', function () {
+    echo "<script>\n"
+        . "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}\n"
+        . "gtag('consent','default',{ad_storage:'denied',ad_user_data:'denied',ad_personalization:'denied',analytics_storage:'denied',functionality_storage:'granted',security_storage:'granted',wait_for_update:500});\n"
+        . "gtag('set','url_passthrough',true);gtag('set','ads_data_redaction',true);\n"
+        . "</script>\n";
+    if (mp_ads_active()) {
+        echo '<meta name="google-adsense-account" content="ca-' . esc_attr(mp_ads_pub_id()) . '">' . "\n";
+    }
+}, 0);
+
+add_action('wp_head', function () {
+    if (!mp_ads_active() || is_admin() || is_feed() || is_embed()) return;
+    echo '<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-'
+        . esc_attr(mp_ads_pub_id()) . '" crossorigin="anonymous"></script>' . "\n";
+}, 20);
+
+/* Screens where Google-served ads are allowed (Inventory value / Ads interfering). */
+function mp_ads_screen_allowed() {
+    if (is_admin() || wp_doing_ajax() || is_feed() || is_embed() || is_preview()) return false;
+    if (is_404() || is_search() || is_attachment()) return false;
+    if (is_singular()) {
+        $post = get_queried_object();
+        if (!$post || empty($post->post_content)) return false;
+        if (str_word_count(wp_strip_all_tags(strip_shortcodes($post->post_content))) < 250) return false;
+        $utility = array('privacy-policy', 'advertising-disclosure', 'disclaimer', 'terms', 'terms-of-use', 'terms-of-service',
+                         'contact', 'about', 'about-us', 'editorial-policy', 'corrections-policy', 'ownership-and-funding');
+        if (in_array($post->post_name, $utility, true)) return false;
+        return true;
+    }
+    if (is_home() || is_front_page()) return true;
+    if ((is_category() || is_tag() || is_tax()) && !is_paged()) {
+        $t = get_queried_object();
+        return $t && !empty($t->count) && $t->count >= 3;
+    }
+    return false;
+}
+
+function mp_ads_render($slot, $format = 'auto') {
+    if (!mp_ads_screen_allowed()) return;
+    $pub  = mp_ads_pub_id();
+    $unit = mp_ads_slot_id($slot);
+    if ($pub === '' || $unit === '') {
+        if (current_user_can('manage_options')) {
+            printf('<div class="mp-ad-inactive" style="margin:18px auto;max-width:970px;padding:8px;border:1px dashed #cbd5e1;border-radius:8px;text-align:center;font-size:11px;color:#94a3b8">Ad slot &ldquo;%s&rdquo; &mdash; inactive (set the AdSense Publisher ID and unit id)</div>', esc_html($slot));
+        }
+        return;
+    }
+    $is_sidebar = ($slot === 'sidebar');
+    printf(
+        '<div class="mp-ad mp-ad--%1$s"><span class="mp-ad__label">Advertisement</span>'
+        . '<ins class="adsbygoogle" style="display:block;%2$s" data-ad-client="ca-%3$s" data-ad-slot="%4$s" data-ad-format="%5$s" data-full-width-responsive="%6$s"></ins>'
+        . '<script>(adsbygoogle=window.adsbygoogle||[]).push({});</script></div>',
+        esc_attr($slot), $is_sidebar ? 'min-height:250px' : 'min-height:100px',
+        esc_attr($pub), esc_attr($unit), esc_attr($format), $is_sidebar ? 'false' : 'true'
+    );
+}
+
+add_action('init', function () {
+    foreach (array('mp_ad_header', 'mp_ad_in_feed', 'mp_ad_sidebar', 'mp_ad_in_article') as $h) remove_all_actions($h);
+    add_action('mp_ad_header',     function () { mp_ads_render('header'); });
+    add_action('mp_ad_in_feed',    function () { mp_ads_render('in_feed'); });
+    add_action('mp_ad_sidebar',    function () { mp_ads_render('sidebar'); });
+    add_action('mp_ad_in_article', function () { mp_ads_render('in_article'); });
+}, 20);
+
+add_filter('the_content', function ($content) {
+    if (!is_singular('post') || !in_the_loop() || !is_main_query()) return $content;
+    if (!mp_ads_active() || mp_ads_slot_id('in_article') === '' || !mp_ads_screen_allowed()) return $content;
+    $blocks = preg_split('/(?<=<\/p>)/', $content);
+    if (count($blocks) < 8) return $content;
+    ob_start(); mp_ads_render('in_article', 'fluid'); $ad = ob_get_clean();
+    array_splice($blocks, (int) floor(count($blocks) * 0.55), 0, $ad);
+    return implode('', $blocks);
+}, 20);
+
+add_action('wp_head', function () {
+    echo "<style id=\"mp-ads-css\">\n"
+        . ".mp-ad{margin:24px auto;max-width:100%;text-align:center;clear:both;overflow:hidden}\n"
+        . ".mp-ad--header{max-width:970px}.mp-ad--in_feed,.mp-ad--in_article{max-width:728px}.mp-ad--sidebar{max-width:300px;margin:18px auto}\n"
+        . ".mp-ad__label{display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--mp-muted,#94a3b8);margin-bottom:4px}\n"
+        . ".mp-header + .mp-ad,.mp-nav + .mp-ad{margin-top:28px}.mp-ad + .mp-cta,.mp-ad + .mp-nav,.mp-ad + button{margin-top:20px}\n"
+        . "</style>\n";
+}, 21);
+
+/* /ads.txt - only once a Publisher ID is set. */
+add_action('init', function () { add_rewrite_rule('^ads\.txt$', 'index.php?mp_ads_txt=1', 'top'); });
+add_filter('query_vars', function ($v) { $v[] = 'mp_ads_txt'; return $v; });
+add_action('template_redirect', function () {
+    if (!get_query_var('mp_ads_txt')) return;
+    header('Content-Type: text/plain; charset=utf-8');
+    $pub = mp_ads_pub_id();
+    if ($pub === '') { status_header(404); echo "# ads.txt not configured yet\n"; exit; }
+    $lines = apply_filters('mp_ads_txt_lines', array(
+        '# MoneyPuran authorised digital sellers',
+        'google.com, ' . $pub . ', DIRECT, f08c47fec0942fa0',
+    ), $pub);
+    echo implode("\n", $lines) . "\n";
+    exit;
+});
+register_activation_hook(__FILE__, function () {
+    add_rewrite_rule('^ads\.txt$', 'index.php?mp_ads_txt=1', 'top');
+    flush_rewrite_rules();
+});
+
+/* Inventory value + web-search-spam: keep thin auto-generated listing screens
+   out of the index. */
+add_filter('wp_robots', function ($robots) {
+    $obj   = get_queried_object();
+    $count = ($obj && isset($obj->count)) ? (int) $obj->count : 0;
+    $thin  = is_search() || is_404() || is_author() || is_date()
+        || ((is_tag() || is_tax()) && $count < 3)
+        || (is_paged() && (is_archive() || is_home()));
+    if ($thin) {
+        $robots['noindex'] = true;
+        $robots['follow']  = true;
+        unset($robots['index']);
+    }
+    return $robots;
+}, 20);
