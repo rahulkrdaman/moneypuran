@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.3.4
+ * Version: 1.3.5
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -286,8 +286,34 @@ function mp_md_ajax_indices() {
 function mp_md_ajax_stocks() {
     wp_send_json_success(mp_md_sorted_stocks(isset($_REQUEST['filter']) ? sanitize_key($_REQUEST['filter']) : 'trending'));
 }
+function mp_md_stock_sector() {
+    return array(
+        'TCS' => 'Nifty IT', 'INFY' => 'Nifty IT', 'WIPRO' => 'Nifty IT', 'HCLTECH' => 'Nifty IT', 'TECHM' => 'Nifty IT',
+        'HDFCBANK' => 'Nifty Bank', 'ICICIBANK' => 'Nifty Bank', 'SBIN' => 'Nifty Bank',
+        'AXISBANK' => 'Nifty Bank', 'KOTAKBANK' => 'Nifty Bank', 'BAJFINANCE' => 'Nifty Bank', 'BAJAJFINSV' => 'Nifty Bank',
+        'SUNPHARMA' => 'Nifty Pharma', 'MARUTI' => 'Nifty Auto',
+        'ITC' => 'Nifty FMCG', 'HINDUNILVR' => 'Nifty FMCG', 'JSWSTEEL' => 'Nifty Metal',
+        'NTPC' => 'Nifty Energy', 'ONGC' => 'Nifty Energy', 'POWERGRID' => 'Nifty Energy', 'RELIANCE' => 'Nifty Energy',
+    );
+}
+
 function mp_md_sorted_stocks($filter) {
     $stocks = array_values(mp_md_get_stocks()['stocks']);
+
+    // Enrich each row with its sector index move, for the "what's moving it" note.
+    $grp = get_transient(MP_MD_GRP_KEY);
+    $secBy = array();
+    if (is_array($grp) && !empty($grp['sectors'])) {
+        foreach ($grp['sectors'] as $r) $secBy[$r['label']] = $r['chgPct'];
+    }
+    $secMap = mp_md_stock_sector();
+    foreach ($stocks as &$s) {
+        $lbl = isset($secMap[$s['symbol']]) ? $secMap[$s['symbol']] : '';
+        $s['sector']     = $lbl;
+        $s['sector_chg'] = ($lbl !== '' && isset($secBy[$lbl])) ? $secBy[$lbl] : null;
+    }
+    unset($s);
+
     if ($filter === 'gainers' || $filter === 'momentum' || $filter === 'buy') {
         usort($stocks, fn($a, $b) => ($b['change_pct'] ?? -99) <=> ($a['change_pct'] ?? -99));
     } elseif ($filter === 'losers') {
@@ -505,17 +531,19 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
   function vol(n){ n=Number(n)||0; if(n>=1e7) return (n/1e7).toFixed(2)+' Cr'; if(n>=1e5) return (n/1e5).toFixed(2)+' L'; return n.toLocaleString('en-IN'); }
   function sigOf(p){ return p > 1.5 ? {l:'Bullish',c:'bullish'} : (p < -1.5 ? {l:'Bearish',c:'bearish'} : {l:'Neutral',c:'neutral'}); }
 
+  var LAST = [];   // last loaded stock list, for the "Why?" panel
+
   function rowHtml(s, i){
     var up = (s.change_pct||0) >= 0, sg = sigOf(s.change_pct||0);
     return '<tr>'
       + '<td class="td-rank">'+(i+1)+'</td>'
-      + '<td class="td-stock"><strong>'+s.symbol+'</strong><span style="display:block;font-size:11px;opacity:.7">'+(s.name||'')+' &middot; '+(s.exchange||'NSE')+'</span></td>'
-      + '<td class="td-price">&#8377;'+inr(s.price)+'</td>'
+      + '<td class="td-stock"><strong>'+s.symbol+'</strong><span style="display:block;font-size:11px;opacity:.7">'+(s.name||'')+' · '+(s.exchange||'NSE')+'</span></td>'
+      + '<td class="td-price">₹'+inr(s.price)+'</td>'
       + '<td class="td-change"><span class="chg-val '+(up?'chg-up':'chg-dn')+'">'+(up?'+':'')+Number(s.change_pct||0).toFixed(2)+'%</span></td>'
       + '<td class="td-vol">'+vol(s.volume)+'</td>'
       + '<td class="td-signal"><span class="sig-pill sig-'+sg.c+'">'+sg.l+'</span></td>'
-      + '<td class="td-score">&ndash;</td>'
-      + '<td class="td-action"><a href="'+(location.origin)+'/?s='+encodeURIComponent(s.symbol)+'" style="font-size:12px;font-weight:600">News &rarr;</a></td>'
+      + '<td class="td-score">–</td>'
+      + '<td class="td-action"><button type="button" class="mpst-why" data-sym="'+s.symbol+'" style="font-size:12px;font-weight:600;background:none;border:0;color:var(--mpst-accent,#3b82f6);cursor:pointer;padding:0">Why?</button></td>'
       + '</tr>';
   }
   function cardHtml(s, i){
@@ -523,11 +551,76 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
     return '<div class="mpst-card">'
       + '<div class="mpst-card-top"><span class="mpst-card-rank">#'+(i+1)+'</span><strong>'+s.symbol+'</strong>'
       + '<span class="chg-val '+(up?'chg-up':'chg-dn')+'">'+(up?'+':'')+Number(s.change_pct||0).toFixed(2)+'%</span></div>'
-      + '<div class="mpst-card-row"><span>&#8377;'+inr(s.price)+'</span>'
+      + '<div class="mpst-card-row"><span>₹'+inr(s.price)+'</span>'
       + '<span class="sig-pill sig-'+sg.c+'">'+sg.l+'</span>'
       + '<span style="opacity:.7">Vol '+vol(s.volume)+'</span></div>'
-      + '<div class="mpst-card-reason" style="font-size:11px;opacity:.7">'+(s.name||'')+' &middot; delayed</div></div>';
+      + '<div class="mpst-card-row"><span style="font-size:11px;opacity:.7">'+(s.name||'')+' · '+(s.exchange||'NSE')+'</span>'
+      + '<button type="button" class="mpst-why" data-sym="'+s.symbol+'" style="font-size:12px;font-weight:600;background:none;border:0;color:var(--mpst-accent,#3b82f6);cursor:pointer;padding:0">Why is it moving?</button></div></div>';
   }
+
+  /* ---- "Why?" panel: factual observations + a read of the move + related news ---- */
+  function observe(s){
+    var p = Number(s.change_pct)||0, dir = p>=0 ? 'up' : 'down', mag = Math.abs(p).toFixed(2), out = [];
+    out.push('<strong>'+s.symbol+'</strong> is '+dir+' <strong>'+mag+'%</strong> today at ₹'+inr(s.price)+' (day range ₹'+inr(s.low||s.price)+'–₹'+inr(s.high||s.price)+').');
+    var rel = null;
+    if (s.sector && s.sector_chg != null){
+      var sc = Number(s.sector_chg), diff = p - sc;
+      var word = Math.abs(diff) < 0.4 ? 'in line with' : (diff > 0 ? 'ahead of' : 'behind');
+      out.push('That is '+word+' its sector — the '+s.sector+' index is '+(sc>=0?'+':'')+sc.toFixed(2)+'% today.');
+      rel = word;
+    }
+    if (s.w52_high && s.w52_low){
+      var fh = (s.w52_high - s.price)/s.w52_high*100, fl = (s.price - s.w52_low)/s.w52_low*100;
+      if (fh <= fl) out.push('It is about '+fh.toFixed(0)+'% below its 52-week high of ₹'+inr(s.w52_high)+'.');
+      else out.push('It is about '+fl.toFixed(0)+'% above its 52-week low of ₹'+inr(s.w52_low)+'.');
+    }
+    out.push('Volume so far: '+vol(s.volume)+'.');
+    return { text: out.join(' '), rel: rel, dir: dir };
+  }
+  function readMove(o, s){
+    if (o.rel === 'in line with')
+      return 'The move looks <strong>sector-driven</strong> — '+s.symbol+' is tracking the wider '+(s.sector||'market')+', so today’s change is more about the sector/market mood than the company itself.';
+    if (o.rel === 'behind' || o.rel === 'ahead of')
+      return 'The stock is moving <strong>faster than its sector</strong>, which usually points to something <strong>stock-specific</strong> — an earnings update, order win/loss, brokerage note, block deal or management news. Check the coverage below.';
+    return 'With the sector read unavailable, watch whether this is a broad-market day or a stock-specific story — the coverage below is the fastest way to tell.';
+  }
+  function newsFor(s){
+    var q = encodeURIComponent(s.name || s.symbol);
+    return fetch((location.origin||'')+'/wp-json/wp/v2/posts?search='+q+'&per_page=4&_fields=title,link', {credentials:'omit'})
+      .then(function(r){ return r.ok ? r.json() : []; })
+      .then(function(posts){
+        if (posts && posts.length){
+          return '<ul style="margin:6px 0 0;padding-left:18px">'+posts.map(function(p){
+            return '<li style="margin:4px 0"><a href="'+p.link+'">'+(p.title.rendered||'')+'</a></li>';
+          }).join('')+'</ul>';
+        }
+        return '<p style="margin:6px 0 0">No MoneyPuran article on '+(s.name||s.symbol)+' yet. '
+          + '<a target="_blank" rel="noopener" href="https://news.google.com/search?q='+q+'%20share%20price%20NSE">Latest on Google News</a> '
+          + '· <a href="'+(location.origin||'')+'/category/stocks/">Our Stocks section</a></p>';
+      })
+      .catch(function(){ return '<p style="margin:6px 0 0"><a href="'+(location.origin||'')+'/category/stocks/">Browse our Stocks section</a></p>'; });
+  }
+  window.mpstWhy = function(sym){
+    var s = null;
+    for (var i=0;i<LAST.length;i++){ if (LAST[i].symbol === sym){ s = LAST[i]; break; } }
+    if (!s) return;
+    var panel = $('mpstAnalysisPanel'), body = $('mpstApBody'), title = $('mpstApTitle');
+    if (!panel || !body) return;
+    var gate = $('mpstPremiumGate'); if (gate) gate.style.display = 'none';
+    var ai = $('mpstAiPanel'); if (ai) ai.style.display = 'none';
+    var o = observe(s);
+    if (title) title.textContent = s.symbol + ' — ' + (s.name || '');
+    body.innerHTML =
+        '<div style="font-size:14px;line-height:1.6">'
+      +   '<h4 style="margin:0 0 4px">What the numbers show</h4><p style="margin:0">'+o.text+'</p>'
+      +   '<h4 style="margin:14px 0 4px">A read of the move</h4><p style="margin:0">'+readMove(o, s)+'</p>'
+      +   '<h4 style="margin:14px 0 4px">Related coverage</h4><div id="mpstWhyNews">Loading…</div>'
+      +   '<p style="margin:14px 0 0;font-size:12px;opacity:.7">This is an automated summary of publicly available, possibly delayed market data — not investment advice, research or a recommendation to buy or sell. Reasons for a price move are our interpretation of the data, not confirmed facts. Consult a SEBI-registered investment adviser before acting.</p>'
+      + '</div>';
+    panel.style.display = '';
+    panel.scrollIntoView({ block: 'nearest' });
+    newsFor(s).then(function(html){ var n = $('mpstWhyNews'); if (n) n.innerHTML = html; });
+  };
 
   function summary(list){
     var b=0,n=0,d=0, volLeader=list[0]||{symbol:'-'}, maxV=-1;
@@ -554,14 +647,16 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
       .then(function(d){
         var list = (d && d.stocks) ? d.stocks.slice(0,10) : [];
         if (!list.length) throw new Error('empty');
+        LAST = list;
         var tb = $('mpstTableBody'); if (tb) tb.innerHTML = list.map(rowHtml).join('');
         var cc = $('mpstCards'); if (cc) cc.innerHTML = list.map(cardHtml).join('');
         summary(list);
         // relabel columns we repurposed
         var vh = W.querySelector('.th-vol'); if (vh) vh.textContent = 'Volume';
+        var sh = W.querySelector('.th-action'); if (sh) sh.textContent = 'Why?';
         show('mpstTable');
-        if (src) src.textContent = 'NSE &middot; live';
-        var t=$('mpstTime'); if(t) t.textContent = ' - ' + new Date().toLocaleTimeString();
+        if (src) src.textContent = 'NSE · live';
+        var t=$('mpstTime'); if(t) t.textContent = ' · ' + new Date().toLocaleTimeString();
       })
       .catch(function(){
         show('mpstError');
@@ -578,6 +673,12 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
   };
   window.mpstRefresh = function(){ window.mpstLoad(); };
   window.mpstClosePanel = function(){ var p=$('mpstAnalysisPanel'); if(p) p.style.display='none'; };
+
+  // "Why?" buttons (delegated, survives table re-renders)
+  W.addEventListener('click', function(e){
+    var b = e.target.closest ? e.target.closest('.mpst-why') : null;
+    if (b && b.getAttribute('data-sym')) { e.preventDefault(); window.mpstWhy(b.getAttribute('data-sym')); }
+  });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', window.mpstLoad);
   else window.mpstLoad();
