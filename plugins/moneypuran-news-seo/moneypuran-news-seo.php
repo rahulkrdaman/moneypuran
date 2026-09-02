@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -608,12 +608,12 @@ add_action('wp_head', function () {
         . "</style>\n";
 }, 21);
 
-/* /ads.txt - only once a Publisher ID is set. */
-add_action('init', function () { add_rewrite_rule('^ads\.txt$', 'index.php?mp_ads_txt=1', 'top'); });
-add_filter('query_vars', function ($v) { $v[] = 'mp_ads_txt'; return $v; });
-add_action('template_redirect', function () {
-    if (!get_query_var('mp_ads_txt')) return;
+/* /ads.txt - served directly (no rewrite rules), only once a Publisher ID is set. */
+add_action('init', function () {
+    $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+    if (!preg_match('#^/+ads\.txt(?:$|[?/])#i', $uri)) return;
     header('Content-Type: text/plain; charset=utf-8');
+    header('X-Robots-Tag: noindex');
     $pub = mp_ads_pub_id();
     if ($pub === '') { status_header(404); echo "# ads.txt not configured yet\n"; exit; }
     $lines = apply_filters('mp_ads_txt_lines', array(
@@ -622,11 +622,7 @@ add_action('template_redirect', function () {
     ), $pub);
     echo implode("\n", $lines) . "\n";
     exit;
-});
-register_activation_hook(__FILE__, function () {
-    add_rewrite_rule('^ads\.txt$', 'index.php?mp_ads_txt=1', 'top');
-    flush_rewrite_rules();
-});
+}, 0);
 
 /* Inventory value + web-search-spam: keep thin auto-generated listing screens
    out of the index. */
