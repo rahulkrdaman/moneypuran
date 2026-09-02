@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.1.3
+ * Version: 1.1.4
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -666,3 +666,73 @@ add_filter('rank_math/sitemap/index', function ($xml) {
            . "\t</sitemap>\n";
     return $entry . $xml;
 });
+
+/* ============================================================================
+ * FRONT-END UX FIXES  (v1.1.4)
+ *  - drop the duplicate lead image the News Desk embeds in the body (the
+ *    theme already shows the featured image);
+ *  - guest comments: name required, e-mail optional, posted instantly, with
+ *    a light spam guard.
+ * ==========================================================================*/
+
+/* 1. Remove the first <figure class="newsdesk-figure"> from single-post content
+   so the article's featured image isn't shown twice. */
+add_filter('the_content', function ($content) {
+    if (!is_singular('post') || !in_the_loop() || !is_main_query()) return $content;
+    return preg_replace('#<figure[^>]*class="[^"]*newsdesk-figure[^"]*"[^>]*>.*?</figure>#is', '', $content, 1);
+}, 8);
+
+/* 2. Guest comments - instant, e-mail optional. */
+add_filter('pre_option_require_name_email',          '__return_zero');   // e-mail not required
+add_filter('pre_option_comment_registration',        '__return_zero');   // no login required
+add_filter('pre_option_comment_moderation',          '__return_zero');   // don't hold for moderation
+add_filter('pre_option_comment_previously_approved', '__return_zero');   // don't require a prior approved comment
+add_filter('pre_option_close_comments_for_old_posts','__return_zero');
+add_filter('pre_option_page_comments',               '__return_zero');
+add_filter('pre_option_show_comments_cookies_opt_in','__return_zero');
+
+/* Comment form: keep Name, make e-mail optional & not published, drop Website. */
+add_filter('comment_form_default_fields', function ($fields) {
+    $commenter = wp_get_current_commenter();
+    $fields['author'] = '<p class="comment-form-author"><label for="author">Name <span class="required">*</span></label>'
+        . '<input id="author" name="author" type="text" value="' . esc_attr($commenter['comment_author']) . '" size="30" maxlength="60" required /></p>';
+    $fields['email'] = '<p class="comment-form-email"><label for="email">Email <span style="opacity:.6">(optional, not published)</span></label>'
+        . '<input id="email" name="email" type="email" value="' . esc_attr($commenter['comment_author_email']) . '" size="30" maxlength="100" /></p>';
+    unset($fields['url'], $fields['cookies']);
+    return $fields;
+});
+add_filter('comment_form_defaults', function ($d) {
+    $d['comment_notes_before'] = '<p class="comment-notes">Comment as a guest - just your name. Your email (if given) is never shown or shared.</p>';
+    $d['comment_notes_after']  = '';
+    // honeypot
+    $d['comment_field'] .= '<p style="position:absolute;left:-9999px" aria-hidden="true"><label>Leave this field empty<input type="text" name="mp_hp" tabindex="-1" autocomplete="off" value="" /></label></p>';
+    return $d;
+});
+
+/* Light spam guard: honeypot + link cap + minimums. Runs before WP stores it. */
+add_filter('preprocess_comment', function ($c) {
+    if (!empty($_POST['mp_hp'])) {
+        wp_die('Spam blocked.', 'Comment blocked', array('response' => 403));
+    }
+    if ($c['comment_type'] === '' || $c['comment_type'] === 'comment') {
+        $name = trim($c['comment_author']);
+        $body = trim($c['comment_content']);
+        if (mb_strlen($name) < 2) {
+            wp_die('Please enter your name.', 'Comment blocked', array('response' => 403, 'back_link' => true));
+        }
+        if (mb_strlen($body) < 3) {
+            wp_die('Please write a comment.', 'Comment blocked', array('response' => 403, 'back_link' => true));
+        }
+        if (preg_match_all('#https?://#i', $body) > 2) {
+            wp_die('Too many links in that comment.', 'Comment blocked', array('response' => 403, 'back_link' => true));
+        }
+    }
+    return $c;
+}, 20);
+
+/* Keep instant-approval for genuine guest comments. */
+add_filter('pre_comment_approved', function ($approved, $commentdata) {
+    if (is_wp_error($approved)) return $approved;
+    if (($commentdata['comment_type'] ?? 'comment') === 'comment') return 1;
+    return $approved;
+}, 99, 2);
