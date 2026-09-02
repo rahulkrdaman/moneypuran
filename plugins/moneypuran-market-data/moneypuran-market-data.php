@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.2.1
+ * Version: 1.2.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -468,10 +468,21 @@ add_action('wp_head', function () {
 });
 
 /* --------------------------- "Live Stock Analysis - Top 10" widget (#mpStockTool) ---------------------------
-   The theme's own stock-analyzer.js is not enqueued on the homepage and references an
-   undefined `mpData` object, so the widget sits on "Loading..." forever. We supply a
-   self-contained implementation that fills the existing markup with REAL Yahoo data
-   (no score/target/momentum theatre) from /wp-json/mp/v1/markets. */
+   The theme's own stock-analyzer.css/js are not enqueued on the homepage and the js
+   references an undefined `mpData` object, so the widget sits unstyled on "Loading..."
+   forever. We (a) enqueue the existing stylesheet and (b) supply a self-contained js
+   implementation that fills the markup with REAL Yahoo data (no score/target/momentum
+   theatre) from /wp-json/mp/v1/markets. */
+
+add_action('wp_enqueue_scripts', function () {
+    foreach (array('moneypuran-plugin', 'moneypuran-stock-analyzer') as $slug) {
+        $rel = $slug . '/assets/css/stock-analyzer.css';
+        $abs = WP_PLUGIN_DIR . '/' . $rel;
+        if (file_exists($abs) && !wp_style_is('mp-stock-analyzer-css', 'enqueued')) {
+            wp_enqueue_style('mp-stock-analyzer-css', plugins_url($rel), array(), (string) filemtime($abs));
+        }
+    }
+});
 
 add_action('wp_footer', function () {
     ?>
