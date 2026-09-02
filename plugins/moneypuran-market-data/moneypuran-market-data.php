@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MoneyPuran Market Data
- * Description: Real market data (Yahoo Finance, server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.3.3
+ * Description: Real market data (server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
+ * Version: 1.3.4
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -44,7 +44,7 @@ function mp_md_stock_map() {
     );
 }
 
-/* Dashboard groups: label map per Yahoo symbol. */
+/* Dashboard groups: label map per symbol. */
 function mp_md_groups() {
     return array(
         'world' => array(
@@ -67,7 +67,7 @@ function mp_md_groups() {
     );
 }
 
-/* --------------------------- Yahoo fetch --------------------------- */
+/* --------------------------- Market data fetch --------------------------- */
 
 function mp_md_yahoo_one($symbol) {
     $url = 'https://query1.finance.yahoo.com/v8/finance/chart/'
@@ -155,7 +155,7 @@ function mp_md_build_stocks() {
             'is_up' => $q['chgPct'] !== null ? $q['chgPct'] >= 0 : true,
             'open' => $q['prev'], 'high' => $q['high'], 'low' => $q['low'], 'volume' => $q['volume'],
             'w52_high' => $q['w52_high'], 'w52_low' => $q['w52_low'],
-            'updated_at' => $q['asOf'], 'data_source' => 'yahoo',
+            'updated_at' => $q['asOf'], 'data_source' => 'live',
         );
     }
     return $out;
@@ -312,7 +312,7 @@ add_action('rest_api_init', function () {
         ),
         'callback' => function (WP_REST_Request $req) {
             $only = $req->get_param('only');
-            $body = array('asOf' => gmdate('c'), 'source' => 'Yahoo Finance', 'note' => 'Prices may be delayed. Not investment advice.');
+            $body = array('asOf' => gmdate('c'), 'source' => 'Market data', 'note' => 'Prices may be delayed. Not investment advice.');
 
             if ($only === 'dashboard') {
                 $body = array_merge($body, mp_md_get_groups());
@@ -365,7 +365,7 @@ add_shortcode('mp_markets_dashboard', function () {
 <section class="mp-section mp-md-dashboard" aria-label="Markets dashboard">
   <div class="mp-md-head">
     <h2 class="mp-section-title">Markets Dashboard</h2>
-    <span class="mp-md-asof" id="mpMdAsOf">Yahoo Finance &middot; prices may be delayed</span>
+    <span class="mp-md-asof" id="mpMdAsOf">Market data &middot; may be delayed</span>
   </div>
   <div class="mp-md-grid" id="mpMdGrid">
     <?php
@@ -439,7 +439,7 @@ html[data-theme="dark"] .mp-md-row{border-top-color:rgba(255,255,255,.08)}
     });
     if(html) GRID.innerHTML = html;
     var a = document.getElementById('mpMdAsOf');
-    if(a) a.textContent = 'Yahoo Finance - updated ' + new Date().toLocaleTimeString() + ' - may be delayed';
+    if(a) a.textContent = 'Market data - updated ' + new Date().toLocaleTimeString() + ' - may be delayed';
   }
   function tick(){ fetch(REST,{headers:{'Accept':'application/json'},credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d) paint(d); }).catch(function(){}); }
   setInterval(tick, 30000);
@@ -471,7 +471,7 @@ add_action('wp_head', function () {
    The theme's own stock-analyzer.css/js are not enqueued on the homepage and the js
    references an undefined `mpData` object, so the widget sits unstyled on "Loading..."
    forever. We (a) enqueue the existing stylesheet and (b) supply a self-contained js
-   implementation that fills the markup with REAL Yahoo data (no score/target/momentum
+   implementation that fills the markup with real market data (no score/target/momentum
    theatre) from /wp-json/mp/v1/markets. */
 
 add_action('wp_enqueue_scripts', function () {
@@ -526,7 +526,7 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
       + '<div class="mpst-card-row"><span>&#8377;'+inr(s.price)+'</span>'
       + '<span class="sig-pill sig-'+sg.c+'">'+sg.l+'</span>'
       + '<span style="opacity:.7">Vol '+vol(s.volume)+'</span></div>'
-      + '<div class="mpst-card-reason" style="font-size:11px;opacity:.7">'+(s.name||'')+' &middot; via Yahoo Finance, delayed</div></div>';
+      + '<div class="mpst-card-reason" style="font-size:11px;opacity:.7">'+(s.name||'')+' &middot; delayed</div></div>';
   }
 
   function summary(list){
@@ -560,7 +560,7 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
         // relabel columns we repurposed
         var vh = W.querySelector('.th-vol'); if (vh) vh.textContent = 'Volume';
         show('mpstTable');
-        if (src) src.textContent = 'NSE - Yahoo Finance';
+        if (src) src.textContent = 'NSE &middot; live';
         var t=$('mpstTime'); if(t) t.textContent = ' - ' + new Date().toLocaleTimeString();
       })
       .catch(function(){
@@ -604,7 +604,7 @@ add_filter('rest_post_dispatch', function ($response, $server, $request) {
             $row['is_up'] = $r['is_up']; $row['open'] = $r['open']; $row['high'] = $r['high'];
             $row['low'] = $r['low']; $row['volume'] = $r['volume'];
             $row['w52_high'] = $r['w52_high']; $row['w52_low'] = $r['w52_low'];
-            $row['updated_at'] = $r['updated_at']; $row['data_source'] = 'yahoo';
+            $row['updated_at'] = $r['updated_at']; $row['data_source'] = 'live';
         }
         $pct = $row['change_pct'] ?? 0;
         $row['signal_label'] = $pct > 1.5 ? 'Bullish' : ($pct < -1.5 ? 'Bearish' : 'Neutral');
@@ -616,7 +616,7 @@ add_filter('rest_post_dispatch', function ($response, $server, $request) {
             $price = number_format((float) ($row['price'] ?? 0), 2);
             $dir = $pct >= 0 ? 'up' : 'down';
             $row['free_analysis'] = array(
-                'summary' => sprintf('%s (%s) is trading at &#8377;%s, %s %s%% today. Prices via Yahoo Finance and may be delayed.',
+                'summary' => sprintf('%s (%s) is trading at &#8377;%s, %s %s%% today. Prices may be delayed.',
                     esc_html($name), esc_html($sym), $price, $dir, number_format(abs($pct), 2)),
                 'trade_idea' => 'MoneyPuran does not publish buy/sell targets. This is market data, not investment advice.',
             );
@@ -708,7 +708,7 @@ function mp_md_ticker_data() {
     }
 
     // Live market lines - READ ONLY from the warmed caches (the cron keeps them
-    // fresh). Never trigger a blocking Yahoo fetch from the ticker request.
+    // fresh). Never trigger a blocking upstream fetch from the ticker request.
     $idxT = get_transient(MP_MD_IDX_KEY);
     $grpT = get_transient(MP_MD_GRP_KEY);
     $idx  = is_array($idxT) && !empty($idxT['indices']) ? $idxT : array('indices' => array());
