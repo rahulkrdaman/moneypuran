@@ -1092,7 +1092,7 @@ function mp_md_tb_quotes() {
         '^BSESN' => 'SENSEX', '^NSEI' => 'NIFTY 50', '^NSEBANK' => 'BANK NIFTY',
         'INR=X' => 'USD/INR', 'GC=F' => 'GOLD', 'CL=F' => 'CRUDE OIL', 'BTC-USD' => 'BITCOIN',
     );
-    $inr = array('^BSESN' => 1, '^NSEI' => 1, '^NSEBANK' => 1, 'INR=X' => 1);
+    $inr = array('INR=X' => 1);
     $out = array();
     foreach ($rows as $r) {
         if (!isset($r['price']) || !isset($r['sym'])) continue;
@@ -1219,7 +1219,7 @@ add_shortcode('mp_ticker_block', function () {
   }
   function num(n){return Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
   var NM={'^BSESN':'SENSEX','^NSEI':'NIFTY 50','^NSEBANK':'BANK NIFTY','INR=X':'USD/INR','GC=F':'GOLD','CL=F':'CRUDE OIL','BTC-USD':'BITCOIN'};
-  var INR={'^BSESN':1,'^NSEI':1,'^NSEBANK':1,'INR=X':1};
+  var INR={'INR=X':1};
   function slug(s){return String(s).toLowerCase().replace(/&/g,'-and-').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
   function qh(items){
     return items.map(function(it){
