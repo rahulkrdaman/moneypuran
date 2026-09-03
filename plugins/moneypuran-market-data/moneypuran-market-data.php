@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.8.0
+ * Version: 1.8.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -2364,14 +2364,24 @@ function mp_tv_assets_html() {
     };
     rec.setSymbol = function(sym){ rec.symbol = sym; TV.load(rec.build); };
     TV.widgets.push(rec);
+    function near(){
+      var r = host.getBoundingClientRect();
+      var vh = window.innerHeight || document.documentElement.clientHeight;
+      return r.width > 0 && r.bottom > -500 && r.top < vh + 500;
+    }
+    function go(){ if (rec.w || rec._go) return; rec._go = 1; TV.load(rec.build); cleanup(); }
+    function onScroll(){ if (near()) go(); }
+    function cleanup(){ window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); }
     if ('IntersectionObserver' in window){
       var io = new IntersectionObserver(function(es){
-        es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); TV.load(rec.build); } });
-      }, { rootMargin: '400px' });
+        es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); go(); } });
+      }, { rootMargin: '500px' });
       io.observe(host);
-    } else {
-      TV.load(rec.build);
     }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    setTimeout(function(){ if (near()) go(); }, 250);
+    setTimeout(function(){ if (near()) go(); }, 1200);
     return rec;
   };
   var last = TV.theme();
