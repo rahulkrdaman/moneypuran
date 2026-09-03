@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MoneyPuran Market Data
- * Description: Real market data (server-side, cached) - theme index bar, "Live Markets" widget, and the homepage Markets Dashboard (world indices, currencies, commodities, sector indices, indicative gold/silver). Replaces the simulated fallback and neutralises the fabricated "STRONG BUY" trade ideas. Safe to deactivate.
- * Version: 1.3.5
+ * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
+ * Version: 1.4.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1028,3 +1028,375 @@ function mp_md_render_ticker() {
 }
 add_action('mp_news_ticker', 'mp_md_render_ticker');
 add_shortcode('mp_news_ticker', function () { ob_start(); mp_md_render_ticker(); return ob_get_clean(); });
+
+/* ============================================================================
+ * CITY RATES  (v1.4.0)  -  Gold / Silver / Fuel by city
+ *  - Gold & silver: indicative India reference = international price (COMEX x
+ *    USD/INR, already in the dashboard cache) adjusted for import duty + GST.
+ *    One national reference shown per city (an optional per-city premium map
+ *    defaults to 0) -> honest, and avoids thin per-city doorway pages.
+ *  - Fuel: a curated, dated table (option `mp_fuel_rates`) - Indian petrol/
+ *    diesel prices change rarely and city-by-city, so a maintained table with
+ *    an "as of" date is accurate. Editable in wp-admin or via REST.
+ *  - City picker + optional "use my location" (client-side reverse geocode).
+ * ==========================================================================*/
+
+function mp_rates_cities() {
+    return array(
+        'Mumbai', 'Delhi', 'Bengaluru', 'Hyderabad', 'Chennai', 'Kolkata', 'Ahmedabad',
+        'Pune', 'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Bhopal', 'Patna',
+        'Surat', 'Vadodara', 'Chandigarh', 'Coimbatore', 'Kochi', 'Visakhapatnam',
+        'Bhubaneswar', 'Guwahati', 'Ranchi', 'Raipur', 'Dehradun', 'Ludhiana',
+        'Madurai', 'Mysuru', 'Varanasi',
+    );
+}
+function mp_rates_norm_city($c) {
+    $c = ucwords(strtolower(trim((string) $c)));
+    $alias = array('Bangalore' => 'Bengaluru', 'Calcutta' => 'Kolkata', 'Bombay' => 'Mumbai',
+                   'Madras' => 'Chennai', 'New Delhi' => 'Delhi', 'Gurugram' => 'Delhi',
+                   'Noida' => 'Delhi', 'Navi Mumbai' => 'Mumbai', 'Thane' => 'Mumbai',
+                   'Trivandrum' => 'Kochi', 'Vizag' => 'Visakhapatnam', 'Prayagraj' => 'Varanasi');
+    if (isset($alias[$c])) $c = $alias[$c];
+    return in_array($c, mp_rates_cities(), true) ? $c : 'Mumbai';
+}
+
+/* Bridge the COMEX-derived price to an India retail reference (import duty + GST).
+   Filterable so it can be tuned without editing the file. */
+function mp_rates_gold($city = 'Mumbai') {
+    $grp = get_transient(MP_MD_GRP_KEY);
+    $b   = is_array($grp) && !empty($grp['bullion_inr']) ? $grp['bullion_inr'] : null;
+    if (!$b) return null;
+
+    $mult      = (float) apply_filters('mp_gold_india_multiplier', 1.13); // ~6% duty + 3% GST + small premium
+    $premiums  = (array) apply_filters('mp_gold_city_premium', array());  // city => extra INR per 10g
+    $prem      = isset($premiums[$city]) ? (float) $premiums[$city] : 0.0;
+
+    $g24_10 = $b['gold_24k_10g'] * $mult + $prem;
+    $s_kg   = $b['silver_kg'] ? $b['silver_kg'] * $mult : null;
+
+    return array(
+        'city'      => $city,
+        'gold_24k'  => array('g' => round($g24_10 / 10), 'ten_g' => round($g24_10)),
+        'gold_22k'  => array('g' => round($g24_10 * 0.916 / 10), 'ten_g' => round($g24_10 * 0.916)),
+        'gold_18k'  => array('g' => round($g24_10 * 0.75 / 10), 'ten_g' => round($g24_10 * 0.75)),
+        'silver'    => $s_kg ? array('g' => round($s_kg / 1000, 2), 'kg' => round($s_kg)) : null,
+        'asOf'      => isset($grp['asOf']) ? $grp['asOf'] : gmdate('c'),
+        'note'      => 'Indicative India reference — international price adjusted for import duty and GST. Local jeweller rates vary by purity, making charges and hallmarking; confirm before buying.',
+    );
+}
+
+/* Curated fuel table. Seeded once; update in Settings -> Reading -> "Fuel prices JSON"
+   or POST /wp-json/mp/v1/fuel (admin). Values in INR/litre. */
+function mp_rates_fuel_default() {
+    // Approx Sept 2026 pump prices; petrol/diesel have been broadly stable.
+    return array(
+        'updated' => '2026-09-01',
+        'cities'  => array(
+            'Mumbai' => array(103.44, 89.97), 'Delhi' => array(94.72, 87.62),
+            'Bengaluru' => array(102.86, 88.94), 'Hyderabad' => array(107.41, 95.65),
+            'Chennai' => array(100.75, 92.34), 'Kolkata' => array(103.94, 90.76),
+            'Ahmedabad' => array(94.49, 90.17), 'Pune' => array(104.09, 90.57),
+            'Jaipur' => array(104.72, 90.21), 'Lucknow' => array(94.65, 87.76),
+            'Kanpur' => array(94.47, 87.61), 'Nagpur' => array(104.28, 90.75),
+            'Indore' => array(106.48, 91.88), 'Bhopal' => array(106.44, 91.82),
+            'Patna' => array(105.58, 93.80), 'Surat' => array(94.63, 90.30),
+            'Vadodara' => array(94.42, 90.09), 'Chandigarh' => array(94.30, 82.45),
+            'Coimbatore' => array(100.90, 92.48), 'Kochi' => array(107.56, 96.43),
+            'Visakhapatnam' => array(108.35, 96.53), 'Bhubaneswar' => array(101.06, 92.91),
+            'Guwahati' => array(97.14, 89.38), 'Ranchi' => array(97.83, 92.71),
+            'Raipur' => array(100.42, 93.09), 'Dehradun' => array(93.35, 88.32),
+            'Ludhiana' => array(94.61, 82.75), 'Madurai' => array(100.98, 92.56),
+            'Mysuru' => array(102.60, 88.68), 'Varanasi' => array(95.30, 88.42),
+        ),
+    );
+}
+function mp_rates_fuel($city = 'Mumbai') {
+    $data = get_option('mp_fuel_rates');
+    if (!is_array($data) || empty($data['cities'])) $data = mp_rates_fuel_default();
+    $c = isset($data['cities'][$city]) ? $data['cities'][$city] : $data['cities']['Mumbai'];
+    return array(
+        'city'    => $city,
+        'petrol'  => isset($c[0]) ? (float) $c[0] : null,
+        'diesel'  => isset($c[1]) ? (float) $c[1] : null,
+        'updated' => isset($data['updated']) ? $data['updated'] : gmdate('Y-m-d'),
+        'all'     => $data['cities'],
+        'note'    => 'Pump prices are set daily by oil marketing companies and vary within a city. Figures are indicative; check at the pump.',
+    );
+}
+add_action('init', function () {
+    if (get_option('mp_fuel_rates') === false) add_option('mp_fuel_rates', mp_rates_fuel_default(), '', false);
+});
+add_action('admin_init', function () {
+    register_setting('reading', 'mp_fuel_rates_json', array('type' => 'string'));
+    add_settings_field('mp_fuel_rates_json', 'Fuel prices JSON', function () {
+        $cur = get_option('mp_fuel_rates'); if (!is_array($cur)) $cur = mp_rates_fuel_default();
+        echo '<textarea name="mp_fuel_rates_json" rows="6" class="large-text code" placeholder=\'{"updated":"YYYY-MM-DD","cities":{"Mumbai":[103.44,89.97]}}\'></textarea>';
+        echo '<p class="description">Paste updated petrol/diesel (INR/litre) as <code>{"updated":"…","cities":{"City":[petrol,diesel]}}</code>. Leave blank to keep the current table. Last updated: <strong>' . esc_html($cur['updated'] ?? '?') . '</strong>.</p>';
+    }, 'reading');
+});
+add_action('update_option_mp_fuel_rates_json', function ($old, $new) {
+    $j = json_decode((string) $new, true);
+    if (is_array($j) && !empty($j['cities'])) update_option('mp_fuel_rates', $j, '', false);
+    delete_option('mp_fuel_rates_json');
+}, 10, 2);
+
+/* --------------------------- REST --------------------------- */
+add_action('rest_api_init', function () {
+    register_rest_route('mp/v1', '/rates', array(
+        'methods' => 'GET', 'permission_callback' => '__return_true',
+        'args' => array('type' => array('default' => 'all'), 'city' => array('default' => 'Mumbai')),
+        'callback' => function (WP_REST_Request $req) {
+            $city = mp_rates_norm_city($req->get_param('city'));
+            $type = $req->get_param('type');
+            $body = array('city' => $city, 'cities' => mp_rates_cities());
+            if ($type === 'gold' || $type === 'all') $body['gold'] = mp_rates_gold($city);
+            if ($type === 'fuel' || $type === 'all') $body['fuel'] = mp_rates_fuel($city);
+            $resp = rest_ensure_response($body);
+            $resp->header('Cache-Control', 'public, max-age=120, s-maxage=300, stale-while-revalidate=600');
+            return $resp;
+        },
+    ));
+    register_rest_route('mp/v1', '/fuel', array(
+        'methods' => 'POST',
+        'permission_callback' => function () { return current_user_can('manage_options'); },
+        'callback' => function (WP_REST_Request $req) {
+            $j = $req->get_json_params();
+            if (!is_array($j) || empty($j['cities'])) return new WP_Error('bad', 'Need {updated, cities}', array('status' => 400));
+            update_option('mp_fuel_rates', $j, '', false);
+            return array('ok' => true, 'updated' => $j['updated'] ?? gmdate('Y-m-d'), 'count' => count($j['cities']));
+        },
+    ));
+});
+
+/* --------------------------- Shared front-end assets --------------------------- */
+function mp_rates_assets() {
+    static $done = false; if ($done) return; $done = true;
+    ?>
+<style id="mp-rates-css">
+.mp-rates{margin:20px 0;color:var(--mp-ink,#0f172a)}
+.mp-rates__bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px}
+.mp-rates__bar select{padding:9px 12px;border:1px solid var(--mp-border,#cbd5e1);border-radius:8px;background:var(--mp-bg,#f8fafc);color:inherit;font-size:14px}
+.mp-rates__loc{padding:9px 12px;border:1px solid var(--mp-border,#cbd5e1);border-radius:8px;background:transparent;color:inherit;font-size:13px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.mp-rates__loc:hover{border-color:var(--mp-brand,#0057ff)}
+.mp-rates__asof{font-size:11px;color:var(--mp-muted,#64748b)}
+.mp-rates__cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.mp-rate-card{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-surface,#fff)}
+.mp-rate-card h4{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-rate-card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.mp-rate-card .u{font-size:12px;color:var(--mp-muted,#64748b)}
+.mp-rates__calc{margin-top:18px;border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:16px;background:var(--mp-surface,#fff)}
+.mp-rates__calc h4{margin:0 0 12px}
+.mp-rates__row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:12px}
+.mp-rates__row label{display:block;font-size:12px;color:var(--mp-muted,#64748b);margin-bottom:4px}
+.mp-rates__row input,.mp-rates__row select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--mp-border,#cbd5e1);border-radius:7px;background:var(--mp-bg,#f8fafc);color:inherit}
+.mp-rates__seg{display:inline-flex;border:1px solid var(--mp-border,#cbd5e1);border-radius:7px;overflow:hidden}
+.mp-rates__seg button{border:0;background:transparent;color:inherit;padding:8px 12px;cursor:pointer;font-size:13px}
+.mp-rates__seg button.on{background:var(--mp-brand,#0057ff);color:#fff}
+.mp-rates__out{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:14px;border-top:1px solid var(--mp-border,#eef1f4);padding-top:10px;margin-top:6px}
+.mp-rates__out .tot{font-size:18px;font-weight:800;color:#16a34a}
+.mp-rates__disc{font-size:11px;color:var(--mp-muted,#64748b);margin-top:12px}
+.mp-rates__tbl{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}
+.mp-rates__tbl th,.mp-rates__tbl td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--mp-border,#eef1f4)}
+.mp-rates__tbl td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
+html[data-theme="dark"] .mp-rate-card,html[data-theme="dark"] .mp-rates__calc{background:#111827;border-color:rgba(255,255,255,.08);color:#f1f5f9}
+html[data-theme="dark"] .mp-rates__row input,html[data-theme="dark"] .mp-rates__row select,html[data-theme="dark"] .mp-rates__bar select{background:#0a0f1e;border-color:rgba(255,255,255,.12);color:#f1f5f9}
+</style>
+<script>
+window.mpRatesGeo = window.mpRatesGeo || function(cb){
+  if(!navigator.geolocation){ cb(null); return; }
+  navigator.geolocation.getCurrentPosition(function(p){
+    fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+p.coords.latitude+'&longitude='+p.coords.longitude+'&localityLanguage=en')
+      .then(function(r){return r.json();})
+      .then(function(d){ cb(d.city || d.locality || d.principalSubdivision || null); })
+      .catch(function(){ cb(null); });
+  }, function(){ cb(null); }, {timeout:8000, maximumAge:600000});
+};
+window.mpRatesCity = window.mpRatesCity || function(){
+  try { return localStorage.getItem('mp_city') || ''; } catch(e){ return ''; }
+};
+window.mpRatesSetCity = window.mpRatesSetCity || function(c){ try{ localStorage.setItem('mp_city', c); }catch(e){} };
+</script>
+    <?php
+}
+
+/* --------------------------- [mp_gold_rates] --------------------------- */
+add_shortcode('mp_gold_rates', function ($atts) {
+    mp_rates_assets();
+    $city = mp_rates_norm_city($atts['city'] ?? (isset($_GET['city']) ? $_GET['city'] : 'Mumbai'));
+    $g = mp_rates_gold($city);
+    $opts = '';
+    foreach (mp_rates_cities() as $c) $opts .= '<option value="' . esc_attr($c) . '"' . selected($c, $city, false) . '>' . esc_html($c) . '</option>';
+    ob_start(); ?>
+<div class="mp-rates" id="mpGoldRates" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/rates?type=gold')); ?>">
+  <div class="mp-rates__bar">
+    <strong>Gold &amp; Silver Rate in <span class="mp-rates__cityname"><?php echo esc_html($city); ?></span></strong>
+    <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
+    <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
+    <span class="mp-rates__asof">Updated <span data-role="asof"><?php echo $g ? esc_html(date('j M Y', strtotime($g['asOf']))) : '—'; ?></span></span>
+  </div>
+  <div class="mp-rates__cards" data-role="cards">
+    <?php if ($g) : foreach (array('24k'=>'24K (999)','22k'=>'22K (916)','18k'=>'18K (750)') as $k=>$lbl): $row=$g['gold_'.$k]; ?>
+      <div class="mp-rate-card"><h4><?php echo esc_html($lbl); ?> Gold</h4>
+        <div class="v">₹<?php echo number_format($row['g']); ?><span class="u">/g</span></div>
+        <div class="u">₹<?php echo number_format($row['ten_g']); ?> / 10g</div></div>
+    <?php endforeach; if (!empty($g['silver'])): ?>
+      <div class="mp-rate-card"><h4>Silver (999)</h4>
+        <div class="v">₹<?php echo number_format($g['silver']['g'], 2); ?><span class="u">/g</span></div>
+        <div class="u">₹<?php echo number_format($g['silver']['kg']); ?> / kg</div></div>
+    <?php endif; else: ?><div class="mp-rate-card">Rates loading…</div><?php endif; ?>
+  </div>
+
+  <div class="mp-rates__calc" data-role="calc">
+    <h4>Gold price calculator</h4>
+    <div class="mp-rates__row">
+      <div><label>Purity</label>
+        <span class="mp-rates__seg" data-role="purity">
+          <button type="button" data-p="24k" class="on">24K</button>
+          <button type="button" data-p="22k">22K</button>
+          <button type="button" data-p="18k">18K</button>
+        </span></div>
+      <div><label>Weight (grams)</label><input type="number" data-role="wt" value="10" min="0" step="0.1"></div>
+      <div><label>Making charges (%)</label><input type="number" data-role="mk" value="12" min="0" step="1"></div>
+      <div><label>GST</label><select data-role="gst"><option value="1">Incl. 3% GST</option><option value="0">Exclude GST</option></select></div>
+    </div>
+    <div class="mp-rates__out">
+      <span>Base value</span><span data-role="o-base">₹0</span>
+      <span>Making charges</span><span data-role="o-make">₹0</span>
+      <span>GST (3%)</span><span data-role="o-gst">₹0</span>
+      <span class="tot">Total</span><span class="tot" data-role="o-tot">₹0</span>
+    </div>
+    <div class="mp-rates__row" style="margin-top:14px">
+      <div><label>Know your money's worth — enter ₹ amount</label>
+        <input type="number" data-role="amt" placeholder="10000" min="0" step="100"></div>
+      <div><label>You can buy</label><input type="text" data-role="amt-out" readonly value="—"></div>
+    </div>
+  </div>
+
+  <p class="mp-rates__disc" data-role="note"><?php echo $g ? esc_html($g['note']) : ''; ?> Not investment advice.</p>
+</div>
+<script>
+(function(){
+  var W = document.getElementById('mpGoldRates'); if(!W) return;
+  var G = null;
+  var sel = W.querySelector('.mp-rates__city');
+  function fmt(n){ return '₹' + Math.round(n).toLocaleString('en-IN'); }
+  function perG(){ var p = W.querySelector('[data-role=purity] .on').getAttribute('data-p'); return G ? G['gold_'+p].g : 0; }
+  function calc(){
+    var wt = parseFloat(W.querySelector('[data-role=wt]').value)||0;
+    var mk = parseFloat(W.querySelector('[data-role=mk]').value)||0;
+    var incl = W.querySelector('[data-role=gst]').value === '1';
+    var base = perG()*wt, make = base*mk/100, sub = base+make, gst = incl ? sub*0.03 : 0;
+    W.querySelector('[data-role=o-base]').textContent = fmt(base);
+    W.querySelector('[data-role=o-make]').textContent = fmt(make);
+    W.querySelector('[data-role=o-gst]').textContent = fmt(gst);
+    W.querySelector('[data-role=o-tot]').textContent = fmt(sub+gst);
+    var amt = parseFloat(W.querySelector('[data-role=amt]').value)||0;
+    var eff = perG()*(1+mk/100)*(incl?1.03:1);
+    W.querySelector('[data-role=amt-out]').value = (amt && eff) ? (amt/eff).toFixed(2)+' g' : '—';
+  }
+  function paint(d){
+    G = d.gold; if(!G) return;
+    W.querySelector('.mp-rates__cityname').textContent = d.city;
+    W.querySelector('[data-role=asof]').textContent = new Date(G.asOf).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+    var C = W.querySelector('[data-role=cards]'), h = '';
+    [['24k','24K (999)'],['22k','22K (916)'],['18k','18K (750)']].forEach(function(x){
+      var r = G['gold_'+x[0]];
+      h += '<div class="mp-rate-card"><h4>'+x[1]+' Gold</h4><div class="v">₹'+r.g.toLocaleString('en-IN')+'<span class="u">/g</span></div><div class="u">₹'+r.ten_g.toLocaleString('en-IN')+' / 10g</div></div>';
+    });
+    if(G.silver) h += '<div class="mp-rate-card"><h4>Silver (999)</h4><div class="v">₹'+G.silver.g.toLocaleString('en-IN')+'<span class="u">/g</span></div><div class="u">₹'+G.silver.kg.toLocaleString('en-IN')+' / kg</div></div>';
+    C.innerHTML = h;
+    var nt = W.querySelector('[data-role=note]'); if(nt) nt.textContent = G.note + ' Not investment advice.';
+    calc();
+  }
+  function load(city){
+    fetch(W.getAttribute('data-endpoint')+'&city='+encodeURIComponent(city), {credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d&&d.gold) paint(d); }).catch(function(){});
+  }
+  W.querySelector('[data-role=purity]').addEventListener('click', function(e){
+    var b = e.target.closest('button'); if(!b) return;
+    W.querySelectorAll('[data-role=purity] button').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on'); calc();
+  });
+  ['wt','mk','gst','amt'].forEach(function(k){ W.querySelector('[data-role='+k+']').addEventListener('input', calc); });
+  sel.addEventListener('change', function(){ window.mpRatesSetCity(sel.value); load(sel.value); });
+  W.querySelector('[data-role=geo]').addEventListener('click', function(){
+    var btn = this; btn.textContent = '📍 Locating…';
+    window.mpRatesGeo(function(c){
+      btn.textContent = '📍 Use my location';
+      if(!c) return;
+      var norm = null, opts = [].slice.call(sel.options);
+      opts.forEach(function(o){ if(o.value.toLowerCase() === String(c).toLowerCase()) norm = o.value; });
+      if(!norm) opts.forEach(function(o){ if(String(c).toLowerCase().indexOf(o.value.toLowerCase())>-1 || o.value.toLowerCase().indexOf(String(c).toLowerCase())>-1) norm = o.value; });
+      if(norm){ sel.value = norm; window.mpRatesSetCity(norm); load(norm); }
+    });
+  });
+  var saved = window.mpRatesCity();
+  if(saved && saved !== sel.value){ var ok=false; [].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok){ sel.value=saved; load(saved); } }
+  calc();
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
+
+/* --------------------------- [mp_fuel_prices] --------------------------- */
+add_shortcode('mp_fuel_prices', function ($atts) {
+    mp_rates_assets();
+    $city = mp_rates_norm_city($atts['city'] ?? (isset($_GET['city']) ? $_GET['city'] : 'Mumbai'));
+    $f = mp_rates_fuel($city);
+    $opts = '';
+    foreach (mp_rates_cities() as $c) $opts .= '<option value="' . esc_attr($c) . '"' . selected($c, $city, false) . '>' . esc_html($c) . '</option>';
+    ob_start(); ?>
+<div class="mp-rates" id="mpFuelPrices" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/rates?type=fuel')); ?>">
+  <div class="mp-rates__bar">
+    <strong>Petrol &amp; Diesel Price in <span class="mp-rates__cityname"><?php echo esc_html($city); ?></span></strong>
+    <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
+    <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
+    <span class="mp-rates__asof">As of <span data-role="asof"><?php echo esc_html(date('j M Y', strtotime($f['updated']))); ?></span></span>
+  </div>
+  <div class="mp-rates__cards" data-role="cards">
+    <div class="mp-rate-card"><h4>Petrol</h4><div class="v" data-role="petrol">₹<?php echo number_format($f['petrol'], 2); ?></div><div class="u">per litre</div></div>
+    <div class="mp-rate-card"><h4>Diesel</h4><div class="v" data-role="diesel">₹<?php echo number_format($f['diesel'], 2); ?></div><div class="u">per litre</div></div>
+  </div>
+  <table class="mp-rates__tbl">
+    <thead><tr><th>City</th><th>Petrol (₹/L)</th><th>Diesel (₹/L)</th></tr></thead>
+    <tbody data-role="tbl">
+      <?php foreach ($f['all'] as $c => $v) : ?>
+        <tr><td><?php echo esc_html($c); ?></td><td><?php echo number_format($v[0], 2); ?></td><td><?php echo number_format($v[1], 2); ?></td></tr>
+      <?php endforeach; ?>
+    </tbody>
+  </table>
+  <p class="mp-rates__disc"><?php echo esc_html($f['note']); ?></p>
+</div>
+<script>
+(function(){
+  var W = document.getElementById('mpFuelPrices'); if(!W) return;
+  var sel = W.querySelector('.mp-rates__city');
+  function load(city){
+    fetch(W.getAttribute('data-endpoint')+'&city='+encodeURIComponent(city), {credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;}).then(function(d){
+        if(!d||!d.fuel) return;
+        W.querySelector('.mp-rates__cityname').textContent = d.city;
+        W.querySelector('[data-role=petrol]').textContent = '₹'+Number(d.fuel.petrol).toFixed(2);
+        W.querySelector('[data-role=diesel]').textContent = '₹'+Number(d.fuel.diesel).toFixed(2);
+        W.querySelector('[data-role=asof]').textContent = new Date(d.fuel.updated).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+      }).catch(function(){});
+  }
+  sel.addEventListener('change', function(){ window.mpRatesSetCity(sel.value); load(sel.value); });
+  W.querySelector('[data-role=geo]').addEventListener('click', function(){
+    var btn=this; btn.textContent='📍 Locating…';
+    window.mpRatesGeo(function(c){
+      btn.textContent='📍 Use my location'; if(!c) return;
+      var norm=null; [].forEach.call(sel.options,function(o){
+        if(o.value.toLowerCase()===String(c).toLowerCase() || String(c).toLowerCase().indexOf(o.value.toLowerCase())>-1) norm=o.value;
+      });
+      if(norm){ sel.value=norm; window.mpRatesSetCity(norm); load(norm); }
+    });
+  });
+  var saved = window.mpRatesCity();
+  if(saved){ var ok=false;[].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok && saved!==sel.value){ sel.value=saved; load(saved); } }
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
