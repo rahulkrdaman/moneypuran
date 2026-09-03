@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.10.3
+ * Version: 1.11.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -2691,6 +2691,7 @@ function mp_candle_key_for($commod_key) {
 
 const MP_SCR_KEY  = 'mp_md_screener_v1';
 const MP_SCR_LOCK = 'mp_md_screener_lock_v1';
+const MP_SCR_BASE = 'mp_md_screener_base_v1';
 const MP_SCR_SOFT = 90;
 
 /** sector => [ index-symbol-for-sector-move | '', [ SYM => Name, ... ] ] */
@@ -2857,17 +2858,30 @@ function mp_md_screener_scenario() {
     $crude = $brent ?: $wti;
     $crudeLine = $crude ? ('is near $' . number_format($crude['price'], 1)
         . ($crude['chgPct'] !== null ? ' (' . ($crude['chgPct'] >= 0 ? '+' : '') . $crude['chgPct'] . '%)' : '')) : 'data loading';
-    $inrLine = $inr ? ('is at ' . chr(0xE2) . chr(0x82) . chr(0xB9) . number_format($inr['price'], 2)
+    $inrLine = $inr ? ('is at ' . "\xE2\x82\xB9" . number_format($inr['price'], 2)
         . ($inr['chgPct'] !== null ? ' (' . ($inr['chgPct'] >= 0 ? '+' : '') . $inr['chgPct'] . '%)' : '')) : 'data loading';
 
+    $gold = $pick($comm, 'GC=F');
+    $vixq = mp_md_yahoo_one('^INDIAVIX');
+    $one  = function ($x) { return $x ? array('level' => $x['price'], 'chg' => $x['chgPct']) : null; };
+
     return array(
-        'nifty'     => $nifty ? array('level' => $nifty['price'], 'chg' => $nifty['chgPct']) : null,
-        'sensex'    => $sensex ? array('level' => $sensex['price'], 'chg' => $sensex['chgPct']) : null,
-        'banknifty' => $bank ? array('level' => $bank['price'], 'chg' => $bank['chgPct']) : null,
+        'nifty'     => $one($nifty),
+        'sensex'    => $one($sensex),
+        'banknifty' => $one($bank),
         'niftyChg'  => $nifty['chgPct'] ?? null,
+        'vix'       => $vixq ? array('level' => round($vixq['price'], 2), 'chg' => $vixq['chgPct']) : null,
         'usLine'    => $usLine,
         'crudeLine' => $crudeLine,
         'inrLine'   => $inrLine,
+        'global'    => array(
+            'dow'    => $one($dji),
+            'nasdaq' => $one($ixic),
+            'sp500'  => $one($gspc),
+            'crude'  => $crude ? array('level' => $crude['price'], 'chg' => $crude['chgPct'], 'name' => ($brent ? 'Brent' : 'WTI')) : null,
+            'gold'   => $one($gold),
+            'usdinr' => $one($inr),
+        ),
         'asOf'      => gmdate('c'),
     );
 }
@@ -2887,7 +2901,14 @@ function mp_md_screener_build() {
     $niftyChg = null;
     foreach (($idx['indices'] ?? array()) as $v) if ($v['sym'] === '^NSEI') $niftyChg = $v['chgPct'];
 
+    // Start-of-day baseline of signals, so "changed today" is stable (not 3-min noise).
+    $istDate  = gmdate('Y-m-d', time() + 19800);
+    $baseline = get_transient(MP_SCR_BASE);
+    $baseSigs = (is_array($baseline) && ($baseline['date'] ?? '') === $istDate) ? $baseline['sigs'] : null;
+
     $out = array();
+    $curSigs = array();
+    $movers  = array();
     foreach ($universe as $sec => $def) {
         list($secIdxSym, $stocks) = $def;
         $secChg = ($secIdxSym !== '' && isset($secBy[$secIdxSym])) ? $secBy[$secIdxSym] : null;
@@ -2896,10 +2917,15 @@ function mp_md_screener_build() {
             $q = $spark[$sym . '.NS'] ?? null;
             if (!$q) continue;
             list($sig, $score) = mp_md_screener_signal($q['chgPct'], $niftyChg, $secChg, $q['w52pos']);
-            $rows[] = array(
+            $curSigs[$sym] = $sig;
+            $prevSig = $baseSigs[$sym] ?? null;
+            $row = array(
                 'sym' => $sym, 'name' => $name, 'price' => $q['price'], 'chgPct' => $q['chgPct'],
-                'w52pos' => $q['w52pos'], 'signal' => $sig, 'score' => $score,
+                'sector' => $sec, 'w52pos' => $q['w52pos'], 'signal' => $sig, 'score' => $score,
+                'prevSignal' => $prevSig, 'changed' => ($prevSig !== null && $prevSig !== $sig),
             );
+            $rows[] = $row;
+            if ($q['chgPct'] !== null) $movers[] = $row;
         }
         usort($rows, function ($a, $b) { return $b['score'] <=> $a['score']; });
         $bull = count(array_filter($rows, function ($r) { return $r['signal'] === 'Bullish'; }));
@@ -2910,7 +2936,31 @@ function mp_md_screener_build() {
         );
         if (microtime(true) > $deadline) break;
     }
-    return array('sectors' => $out, 'scenario' => mp_md_screener_scenario(), '_at' => time(), 'asOf' => gmdate('c'));
+
+    if (!$baseSigs && $curSigs) {
+        set_transient(MP_SCR_BASE, array('date' => $istDate, 'sigs' => $curSigs), 2 * DAY_IN_SECONDS);
+    }
+
+    usort($movers, function ($a, $b) { return ($b['chgPct'] ?? 0) <=> ($a['chgPct'] ?? 0); });
+    $changes = array_values(array_filter($movers, function ($r) { return !empty($r['changed']); }));
+
+    // sector leaderboard
+    $lead = array();
+    foreach ($out as $sec => $info) if ($info['chg'] !== null) $lead[$sec] = $info['chg'];
+    arsort($lead);
+
+    return array(
+        'sectors'  => $out,
+        'scenario' => mp_md_screener_scenario(),
+        'movers'   => array(
+            'up'   => array_slice($movers, 0, 5),
+            'down' => array_slice(array_reverse($movers), 0, 5),
+        ),
+        'changes'  => array_slice($changes, 0, 10),
+        'leaders'  => $lead,
+        '_at'      => time(),
+        'asOf'     => gmdate('c'),
+    );
 }
 
 function mp_md_get_screener() {
@@ -2947,6 +2997,9 @@ add_action('rest_api_init', function () {
             $body = array(
                 'sectors'  => $d['sectors'],
                 'scenario' => $d['scenario'],
+                'movers'   => $d['movers'] ?? null,
+                'changes'  => $d['changes'] ?? array(),
+                'leaders'  => $d['leaders'] ?? array(),
                 'asOf'     => $d['asOf'],
                 'note'     => 'Signals are a rules-based reading of delayed price data. Not investment advice.',
             );
@@ -3237,3 +3290,281 @@ function mp_md_screener_sector_html($name, $info) {
 </div>
     <?php
 }
+
+
+/* ============================================================================
+ * "WHY THE MARKET MOVED" + MARKET PULSE (v1.11.0)
+ *  [mp_why_market]  — always-fresh plain-English "why is the market up/down
+ *                     today" explainer (sector movers + global cues + top
+ *                     movers + latest news + FAQ + FAQPage schema)
+ *  [mp_market_pulse] — sector leaderboard, top gainers/losers, signal changes
+ *                     today, and a search-any-NSE-stock lookup
+ * ==========================================================================*/
+
+function mp_md_dir_word($chg) {
+    if ($chg === null) return 'little changed';
+    if ($chg >= 0.75) return 'firmly higher';
+    if ($chg >= 0.15) return 'higher';
+    if ($chg <= -0.75) return 'sharply lower';
+    if ($chg <= -0.15) return 'lower';
+    return 'flat';
+}
+
+function mp_md_market_news($n = 5) {
+    $ids = array();
+    foreach (array('indian-markets', 'us-markets', 'global-markets', 'markets', 'economy', 'stocks') as $slug) {
+        $t = get_term_by('slug', $slug, 'category');
+        if ($t) $ids[] = (int) $t->term_id;
+    }
+    $args = array('numberposts' => $n, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC');
+    if ($ids) $args['category__in'] = $ids;
+    $q = get_posts($args);
+    if (count($q) < $n) {
+        $q = get_posts(array('numberposts' => $n, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC'));
+    }
+    return $q;
+}
+
+/* --------------------------- [mp_why_market] --------------------------- */
+add_shortcode('mp_why_market', function () {
+    $d   = mp_md_get_screener();
+    $scn = $d['scenario'];
+    if (!$scn) return '<p>Market data is loading — please refresh in a moment.</p>';
+
+    $nc     = $scn['niftyChg'];
+    $dir    = mp_md_dir_word($nc);
+    $upDown = ($nc === null) ? 'moving' : ($nc >= 0 ? 'up' : 'down');
+    $leaders = $d['leaders'] ?? array();
+    $up3    = array_slice($leaders, 0, 3, true);
+    $dn3    = array_slice(array_reverse($leaders, true), 0, 3, true);
+    $movers = $d['movers'] ?? array('up' => array(), 'down' => array());
+    $g      = $scn['global'] ?? array();
+    $ist    = gmdate('H:i', time() + 19800);
+    $istDate= gmdate('j F Y', time() + 19800);
+
+    // build the driver paragraph
+    $glParts = array();
+    if (!empty($g['dow']) || !empty($g['nasdaq'])) $glParts[] = $scn['usLine'];
+    if (!empty($g['crude'])) $glParts[] = 'crude oil ' . $scn['crudeLine'];
+    if (!empty($g['usdinr'])) $glParts[] = 'the rupee ' . $scn['inrLine'];
+    if (!empty($g['gold'])) $glParts[] = 'gold at $' . number_format($g['gold']['level'], 0)
+        . ($g['gold']['chg'] !== null ? ' (' . ($g['gold']['chg'] >= 0 ? '+' : '') . $g['gold']['chg'] . '%)' : '');
+
+    ob_start(); ?>
+<div class="mp-why">
+  <p class="mp-why__lead"><strong>The Nifty 50 is <?php echo esc_html($dir); ?> today (<?php echo $istDate; ?>).</strong>
+    <?php
+      $bits = array();
+      if (!empty($scn['nifty'])) $bits[] = 'Nifty ' . number_format($scn['nifty']['level'], 0) . ' (' . ($scn['nifty']['chg'] >= 0 ? '+' : '') . $scn['nifty']['chg'] . '%)';
+      if (!empty($scn['sensex'])) $bits[] = 'Sensex ' . number_format($scn['sensex']['level'], 0) . ' (' . ($scn['sensex']['chg'] >= 0 ? '+' : '') . $scn['sensex']['chg'] . '%)';
+      if (!empty($scn['banknifty'])) $bits[] = 'Bank Nifty ' . number_format($scn['banknifty']['level'], 0) . ' (' . ($scn['banknifty']['chg'] >= 0 ? '+' : '') . $scn['banknifty']['chg'] . '%)';
+      echo esc_html(implode(' · ', $bits)) . '.';
+      if (!empty($scn['vix'])) {
+          $vc = $scn['vix']['chg'];
+          echo ' India VIX, the market\'s "fear gauge", is at ' . $scn['vix']['level']
+             . ($vc !== null ? ' (' . ($vc >= 0 ? 'up ' : 'down ') . abs($vc) . '% &mdash; ' . ($vc >= 0 ? 'nerves rising' : 'calmer') . ')' : '') . '.';
+      }
+    ?>
+  </p>
+
+  <h2>What&rsquo;s driving the move</h2>
+  <p>
+    <?php if ($up3 || $dn3) : ?>
+      Among sectors, <strong><?php echo esc_html(implode(', ', array_keys($up3))); ?></strong>
+      <?php echo count($up3) > 1 ? 'are' : 'is'; ?> holding up best today, while
+      <strong><?php echo esc_html(implode(', ', array_keys($dn3))); ?></strong>
+      <?php echo count($dn3) > 1 ? 'are' : 'is'; ?> under the most pressure.
+    <?php endif; ?>
+    <?php if ($glParts) : ?>
+      On the global side, <?php echo esc_html(implode(', ', $glParts)); ?>.
+    <?php endif; ?>
+  </p>
+  <ul class="mp-why__cues">
+    <?php foreach ($leaders as $sec => $chg) : ?>
+      <li><span><?php echo esc_html($sec); ?></span>
+        <b class="<?php echo $chg >= 0 ? 'up' : 'dn'; ?>"><?php echo ($chg >= 0 ? '+' : '') . $chg; ?>%</b></li>
+    <?php endforeach; ?>
+  </ul>
+
+  <h2>Biggest movers today</h2>
+  <div class="mp-why__movers">
+    <div><h4>Top gainers</h4><ul>
+      <?php foreach (($movers['up'] ?? array()) as $m) : if (($m['chgPct'] ?? 0) <= 0) continue; ?>
+        <li><?php echo esc_html($m['name']); ?> <b class="up">+<?php echo $m['chgPct']; ?>%</b></li>
+      <?php endforeach; ?>
+    </ul></div>
+    <div><h4>Top losers</h4><ul>
+      <?php foreach (($movers['down'] ?? array()) as $m) : if (($m['chgPct'] ?? 0) >= 0) continue; ?>
+        <li><?php echo esc_html($m['name']); ?> <b class="dn"><?php echo $m['chgPct']; ?>%</b></li>
+      <?php endforeach; ?>
+    </ul></div>
+  </div>
+
+  <h2>Latest market news</h2>
+  <ul class="mp-why__news">
+    <?php foreach (mp_md_market_news(5) as $p) : ?>
+      <li><a href="<?php echo esc_url(get_permalink($p)); ?>"><?php echo esc_html(get_the_title($p)); ?></a>
+        <span><?php echo esc_html(human_time_diff(get_post_time('U', true, $p)) . ' ago'); ?></span></li>
+    <?php endforeach; ?>
+  </ul>
+
+  <h2>Frequently asked</h2>
+  <div class="mp-why__faq">
+    <details open><summary>Why is the stock market <?php echo esc_html($upDown); ?> today?</summary>
+      <p>Today the Nifty is <?php echo esc_html($dir); ?>. The main factors are the sector moves and global cues above &mdash;
+      <?php echo $glParts ? esc_html(strtolower($scn['usLine'])) . ', and ' : ''; ?>
+      shifts in crude oil and the rupee. Day-to-day moves are usually a mix of global sentiment, fund flows and stock-specific news rather than one single reason.</p>
+    </details>
+    <details><summary>Will the market go up tomorrow / recover?</summary>
+      <p>No one can reliably predict the next session. What tends to matter for the next open: how US markets close tonight, moves in crude and the dollar, any domestic data or results, and foreign investor flows. This page updates through the day so you can see the picture as it changes.</p>
+    </details>
+    <details><summary>Is this a good time to invest?</summary>
+      <p>That depends on your goals, time horizon and risk appetite &mdash; not on a single day&rsquo;s move. Long-term investors generally focus on staying invested and adding regularly rather than timing daily swings. This is information only, not advice; consult a SEBI-registered investment adviser.</p>
+    </details>
+    <details><summary>Where can I see which stocks are moving?</summary>
+      <p>The <a href="<?php echo esc_url(home_url('/stock-analysis/')); ?>">Stock Analysis by Sector</a> page lists every large-cap with a Bullish / Neutral / Bearish signal, and the <a href="<?php echo esc_url(home_url('/charts/')); ?>">Live Charts</a> page has full candlestick charts.</p>
+    </details>
+  </div>
+
+  <p class="mp-why__stamp">Updated <?php echo esc_html($ist); ?> IST &middot; figures may be delayed &middot; nothing here is investment advice.</p>
+</div>
+
+<script type="application/ld+json"><?php echo wp_json_encode(array(
+  '@context' => 'https://schema.org', '@type' => 'FAQPage',
+  'mainEntity' => array(
+    array('@type' => 'Question', 'name' => 'Why is the stock market ' . $upDown . ' today?',
+      'acceptedAnswer' => array('@type' => 'Answer', 'text' => 'Today the Nifty 50 is ' . $dir . '. The move reflects a combination of sector performance, global cues (' . implode(', ', $glParts) . ') and fund flows rather than any single cause.')),
+    array('@type' => 'Question', 'name' => 'Will the stock market recover tomorrow?',
+      'acceptedAnswer' => array('@type' => 'Answer', 'text' => 'Short-term market direction cannot be reliably predicted. The next session usually hinges on how US markets close overnight, crude oil and the rupee, domestic data or results, and foreign investor flows.')),
+    array('@type' => 'Question', 'name' => 'Is it a good time to invest in the stock market?',
+      'acceptedAnswer' => array('@type' => 'Answer', 'text' => 'That depends on your personal goals, time horizon and risk appetite, not on a single day\'s move. This page is information only and not investment advice; consult a SEBI-registered investment adviser.')),
+  ),
+), JSON_UNESCAPED_SLASHES); ?></script>
+
+<style>
+.mp-why{margin:12px 0;font-size:15px;line-height:1.65}
+.mp-why h2{font-size:19px;margin:22px 0 8px}
+.mp-why h4{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b);margin:0 0 6px}
+.mp-why__lead{background:var(--mp-bg,#f8fafc);border:1px solid var(--mp-border,#e5e7eb);border-radius:12px;padding:14px 16px}
+.mp-why__cues{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 14px;font-size:13px}
+.mp-why__cues li{display:flex;justify-content:space-between;border-bottom:1px solid var(--mp-border,#eef1f4);padding:5px 0}
+.mp-why__cues b.up,.mp-why__movers b.up{color:#16a34a}.mp-why__cues b.dn,.mp-why__movers b.dn{color:#dc2626}
+.mp-why__movers{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.mp-why__movers ul,.mp-why__news{list-style:none;padding:0;margin:0}
+.mp-why__movers li{padding:5px 0;border-bottom:1px solid var(--mp-border,#eef1f4);font-size:14px;display:flex;justify-content:space-between;gap:8px}
+.mp-why__news li{padding:7px 0;border-bottom:1px solid var(--mp-border,#eef1f4)}
+.mp-why__news a{font-weight:600}
+.mp-why__news span{display:block;font-size:11.5px;color:var(--mp-muted,#64748b)}
+.mp-why__faq details{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:10px 14px;margin-bottom:8px}
+.mp-why__faq summary{font-weight:700;cursor:pointer;font-size:14px}
+.mp-why__faq p{margin:8px 0 0;font-size:14px}
+.mp-why__stamp{font-size:11.5px;color:var(--mp-muted,#64748b);margin-top:14px}
+@media(max-width:560px){.mp-why__movers{grid-template-columns:1fr}}
+html[data-theme="dark"] .mp-why__lead,html[data-theme="dark"] .mp-why__faq details{background:#111827;border-color:rgba(255,255,255,.08)}
+</style>
+    <?php
+    return ob_get_clean();
+});
+
+/* --------------------------- [mp_market_pulse] --------------------------- */
+add_shortcode('mp_market_pulse', function () {
+    $ep = esc_url(home_url('/wp-json/mp/v1/screener'));
+    $oh = esc_url(home_url('/wp-json/mp/v1/ohlc'));
+    ob_start(); ?>
+<div class="mp-pulse" id="mpPulse" data-ep="<?php echo $ep; ?>" data-ohlc="<?php echo $oh; ?>">
+  <div class="mp-pulse__row" data-role="leaders"><span class="mp-pulse__k">Sectors</span> <span data-role="lead">loading&hellip;</span></div>
+  <div class="mp-pulse__grid">
+    <div><h4>Top gainers</h4><ol data-role="gain"><li>&mdash;</li></ol></div>
+    <div><h4>Top losers</h4><ol data-role="lose"><li>&mdash;</li></ol></div>
+    <div><h4>Signal changes today</h4><div data-role="chg" class="mp-pulse__chg">&mdash;</div></div>
+  </div>
+  <form class="mp-pulse__lookup" data-role="lookup">
+    <input type="text" placeholder="Search any NSE stock (e.g. RELIANCE, DMART)" aria-label="Search a stock" autocomplete="off">
+    <button type="submit">Analyse</button>
+  </form>
+  <div data-role="card"></div>
+  <p class="mp-pulse__note">Movers and signal changes are across the ~54 large-caps we track. Not investment advice.</p>
+</div>
+<style>
+.mp-pulse{margin:16px 0;border:1px solid var(--mp-border,#e5e7eb);border-radius:12px;padding:14px 16px;background:var(--mp-surface,#fff)}
+.mp-pulse__row{font-size:13px;margin-bottom:10px}
+.mp-pulse__k{font-weight:700;color:var(--mp-muted,#64748b);text-transform:uppercase;font-size:11px;letter-spacing:.03em}
+.mp-pulse__row .up,.mp-pulse__grid .up{color:#16a34a}.mp-pulse__row .dn,.mp-pulse__grid .dn{color:#dc2626}
+.mp-pulse__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:12px}
+.mp-pulse__grid h4{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b);margin:0 0 6px}
+.mp-pulse__grid ol{margin:0;padding-left:18px;font-size:13px;line-height:1.7}
+.mp-pulse__chg{font-size:12.5px;line-height:1.6}
+.mp-pulse__lookup{display:flex;gap:8px;margin-bottom:10px}
+.mp-pulse__lookup input{flex:1;min-width:0;padding:9px 12px;border:1px solid var(--mp-border,#cbd5e1);border-radius:8px;background:var(--mp-bg,#f8fafc);color:inherit;font-size:13px}
+.mp-pulse__lookup button{padding:9px 16px;border:0;border-radius:8px;background:var(--mp-brand,#0057ff);color:#fff;font-weight:600;font-size:13px;cursor:pointer}
+.mp-pulse__note{font-size:11px;color:var(--mp-muted,#64748b);margin:6px 0 0}
+html[data-theme="dark"] .mp-pulse{background:#111827;border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-pulse__lookup input{background:#0a0f1e;border-color:rgba(255,255,255,.12)}
+</style>
+<script>
+(function(){
+  var W=document.getElementById('mpPulse'); if(!W) return;
+  var EP=W.getAttribute('data-ep'), OH=W.getAttribute('data-ohlc'), SCN=null;
+  function q(s){ return W.querySelector('[data-role='+s+']'); }
+  function pct(v){ return (v>=0?'+':'')+v+'%'; }
+
+  function paint(d){
+    SCN=d.scenario||{};
+    var L=d.leaders||{};
+    var keys=Object.keys(L);
+    q('lead').innerHTML = keys.map(function(k){ var c=L[k]; return k+' <b class="'+(c>=0?'up':'dn')+'">'+pct(c)+'</b>'; }).join(' &nbsp;·&nbsp; ');
+    var mu=(d.movers&&d.movers.up)||[], ml=(d.movers&&d.movers.down)||[];
+    q('gain').innerHTML = mu.filter(function(m){return m.chgPct>0;}).slice(0,5).map(function(m){ return '<li>'+m.name+' <b class="up">'+pct(m.chgPct)+'</b></li>'; }).join('')||'<li>—</li>';
+    q('lose').innerHTML = ml.filter(function(m){return m.chgPct<0;}).slice(0,5).map(function(m){ return '<li>'+m.name+' <b class="dn">'+pct(m.chgPct)+'</b></li>'; }).join('')||'<li>—</li>';
+    var ch=d.changes||[];
+    if(!ch.length){ q('chg').textContent='No signals have flipped since the open.'; }
+    else {
+      var b=ch.filter(function(c){return c.signal==='Bullish';}).map(function(c){return c.name;});
+      var r=ch.filter(function(c){return c.signal==='Bearish';}).map(function(c){return c.name;});
+      var n=ch.filter(function(c){return c.signal==='Neutral';}).map(function(c){return c.name;});
+      var out=[];
+      if(b.length) out.push('<span class="up">▲ Turned bullish:</span> '+b.join(', '));
+      if(r.length) out.push('<span class="dn">▼ Turned bearish:</span> '+r.join(', '));
+      if(n.length) out.push('● Back to neutral: '+n.join(', '));
+      q('chg').innerHTML=out.join('<br>');
+    }
+  }
+
+  fetch(EP,{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d) paint(d); }).catch(function(){});
+  setInterval(function(){ fetch(EP,{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d) paint(d); }).catch(function(){}); }, 45000);
+
+  q('lookup').addEventListener('submit', function(e){
+    e.preventDefault();
+    var v=(this.querySelector('input').value||'').trim().toUpperCase().replace(/[^A-Z0-9&.-]/g,'');
+    if(!v) return;
+    var card=q('card');
+    card.innerHTML='<div style="padding:12px;font-size:13px;opacity:.6">Loading '+v+'…</div>';
+    fetch(OH+'?symbol='+encodeURIComponent(v.toLowerCase())+'&tf=1D',{credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){
+        if(!d||!d.bars||d.bars.length<2){ card.innerHTML='<div style="padding:12px;font-size:13px">Couldn’t find <b>'+v+'</b> on NSE. Try the exact NSE symbol.</div>'; return; }
+        var b=d.bars, last=b[b.length-1][4], prev=b[b.length-2][4];
+        var chg=prev? (last-prev)/prev*100 : 0;
+        var niftyChg=(SCN&&SCN.niftyChg!=null)?SCN.niftyChg:0;
+        var s=0; s+=(chg>=1?1:0)-(chg<=-1?1:0); s+=((chg-niftyChg)>=0.75?1:0)-((chg-niftyChg)<=-0.75?1:0);
+        var sig=s>=2?'Bullish':(s<=-2?'Bearish':'Neutral');
+        var col=sig==='Bullish'?'#16a34a':sig==='Bearish'?'#dc2626':'#64748b';
+        card.innerHTML='<div class="mp-pulse__found">'
+          +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;margin:6px 0 8px">'
+          +'<b style="font-size:16px">'+v+'</b> <span style="font-variant-numeric:tabular-nums">₹'+Number(last).toLocaleString("en-IN")+'</span>'
+          +'<span style="color:'+(chg>=0?"#16a34a":"#dc2626")+';font-weight:600">'+pct(chg.toFixed(2))+'</span>'
+          +'<span style="color:'+col+';font-weight:700">'+(sig==="Bullish"?"▲":sig==="Bearish"?"▼":"●")+' '+sig+'</span></div>'
+          +'<div class="mp-cc" data-symbol="'+v.toLowerCase()+'" data-tf="1D"><div class="mp-cc__head"><span class="mp-cc__title" data-role="title">'+v+'</span><span class="mp-cc__meta" data-role="meta">Loading…</span></div>'
+          +'<div class="mp-cc__tf" data-role="tf">'+["5m","15m","1h","1D","1W"].map(function(t){return "<button type=\"button\" data-t=\""+t+"\""+(t==="1D"?" class=\"on\"":"")+">"+t.toUpperCase()+"</button>";}).join("")+'</div>'
+          +'<div class="mp-cc__box" style="height:340px"></div></div>'
+          +'<p style="font-size:11.5px;color:var(--mp-muted,#64748b);margin:8px 0 0">Signal is a quick day-move read versus the Nifty. Delayed data. Not investment advice.</p></div>';
+        if(window.__mpLWC) window.__mpLWC.scan(true);
+        var tf=card.querySelector('[data-role=tf]');
+        if(tf) tf.addEventListener('click',function(e){ var x=e.target.closest('button[data-t]'); if(!x) return; [].forEach.call(tf.querySelectorAll('button'),function(y){y.classList.remove('on');}); x.classList.add('on'); var rec=card.querySelector('.mp-cc').__mpccRec; if(rec) rec.setTf(x.getAttribute('data-t')); });
+      }).catch(function(){ card.innerHTML='<div style="padding:12px;font-size:13px">Lookup failed, try again.</div>'; });
+  });
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
