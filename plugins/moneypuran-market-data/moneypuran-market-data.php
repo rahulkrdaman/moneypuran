@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.8.1
+ * Version: 1.9.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -623,13 +623,24 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
       +   '<h4 style="margin:0 0 4px">What the numbers show</h4><p style="margin:0">'+o.text+'</p>'
       +   '<h4 style="margin:14px 0 4px">A read of the move</h4><p style="margin:0">'+readMove(o, s)+'</p>'
       +   '<h4 style="margin:14px 0 6px">Price chart</h4>'
+      +   '<div class="mp-cc__tf" data-role="mpstTf" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'
+      +     ['5m','15m','1h','1D','1W'].map(function(t){return '<button type="button" data-t="'+t+'"'+(t==='1D'?' class="on"':'')+' style="border:1px solid var(--mpst-border,#cbd5e1);background:transparent;color:inherit;padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer">'+t.toUpperCase()+'</button>';}).join('')
+      +   '</div>'
       +   '<div id="'+chartId+'" style="height:360px;width:100%;border:1px solid var(--mpst-border,#e5e7eb);border-radius:10px;overflow:hidden"></div>'
       +   '<h4 style="margin:14px 0 4px">Related coverage</h4><div id="mpstWhyNews">Loading…</div>'
-      +   '<p style="margin:14px 0 0;font-size:12px;opacity:.7">Chart by TradingView. This is an automated summary of publicly available, possibly delayed market data — not investment advice, research or a recommendation to buy or sell. Reasons for a price move are our interpretation of the data, not confirmed facts. Consult a SEBI-registered investment adviser before acting.</p>'
+      +   '<p style="margin:14px 0 0;font-size:12px;opacity:.7">Candles from exchange data (Yahoo Finance), possibly delayed. This is an automated summary of publicly available market data — not investment advice, research or a recommendation to buy or sell. Reasons for a price move are our interpretation of the data, not confirmed facts. Consult a SEBI-registered investment adviser before acting.</p>'
       + '</div>';
     panel.style.display = '';
     panel.scrollIntoView({ block: 'nearest' });
-    if (window.__mpTV) window.__mpTV.make(chartId, 'NSE:' + sym, 'D');
+    if (window.__mpLWC) {
+      var _rec = window.__mpLWC.make(chartId, (location.origin||'') + '/wp-json/mp/v1/ohlc', sym, '1D');
+      var _tf = document.querySelector('[data-role=mpstTf]');
+      if (_tf) _tf.addEventListener('click', function(e){
+        var b = e.target.closest('button[data-t]'); if (!b) return;
+        [].forEach.call(_tf.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+        b.classList.add('on'); _rec.setTf(b.getAttribute('data-t'));
+      });
+    }
     newsFor(s).then(function(html){ var n = $('mpstWhyNews'); if (n) n.innerHTML = html; });
   };
 
@@ -2170,21 +2181,32 @@ html[data-theme="dark"] .mp-commod__w52-dot{background:#f1f5f9;border-color:#111
   }
 
   function expandRow(tr, keepOpen){
-    var key=tr.getAttribute('data-key'), tv=tr.getAttribute('data-tv');
+    var key=tr.getAttribute('data-key'), cc=tr.getAttribute('data-cc');
     var next=tr.nextElementSibling;
     if(next && next.classList.contains('mp-commod__exp')){
       if(!keepOpen){ next.remove(); expandedKey=null; return; }
       return;
     }
     var open=body.querySelector('.mp-commod__exp'); if(open) open.remove();
-    var cid='mptvc_row_'+key;
+    var cid='mpcc_row_'+key;
     var exp=document.createElement('tr');
     exp.className='mp-commod__exp';
-    exp.innerHTML='<td colspan="6"><div class="mp-commod__exp-tv" id="'+cid+'"></div>'
-      +'<div class="mp-commod__exp-stat">Full candlestick chart · '+tv+'. Data may be delayed.</div></td>';
+    exp.innerHTML='<td colspan="6"><div class="mp-cc"><div class="mp-cc__head">'
+      +'<span class="mp-cc__title">'+tr.querySelector('.mp-commod__name').firstChild.textContent+'</span>'
+      +'<span class="mp-cc__meta" data-role="meta">Loading…</span></div>'
+      +'<div class="mp-cc__tf" data-role="tf">'
+      +['5m','15m','1h','1D','1W'].map(function(t){return '<button type="button" data-t="'+t+'"'+(t==='1D'?' class="on"':'')+'>'+t.toUpperCase()+'</button>';}).join('')
+      +'</div><div class="mp-cc__box" id="'+cid+'" style="height:380px"></div></div></td>';
     tr.parentNode.insertBefore(exp, tr.nextSibling);
     expandedKey=key;
-    if(window.__mpTV) window.__mpTV.make(cid, tv, 'D');
+    if(window.__mpLWC){
+      var rec=window.__mpLWC.make(cid, (location.origin||'')+'/wp-json/mp/v1/ohlc', cc, '1D');
+      exp.querySelector('[data-role=tf]').addEventListener('click',function(e){
+        var b=e.target.closest('button[data-t]'); if(!b) return;
+        [].forEach.call(exp.querySelectorAll('[data-role=tf] button'),function(x){x.classList.remove('on');});
+        b.classList.add('on'); rec.setTf(b.getAttribute('data-t'));
+      });
+    }
   }
 
   W.querySelector('.mp-commod__tabs').addEventListener('click',function(e){
@@ -2244,7 +2266,7 @@ function mp_md_commod_row_html($r, $spk) {
         $spkSvg = '<svg width="90" height="26" viewBox="0 0 90 26"><path d="' . esc_attr($d) . '" fill="none" stroke="' . $col . '" stroke-width="1.5"/></svg>';
     }
     ?>
-<tr data-key="<?php echo esc_attr($r['key']); ?>" data-group="<?php echo esc_attr($r['group']); ?>" data-sym="<?php echo esc_attr($r['symbol']); ?>" data-tv="<?php echo esc_attr(mp_tv_resolve($r['key'])[0]); ?>">
+<tr data-key="<?php echo esc_attr($r['key']); ?>" data-group="<?php echo esc_attr($r['group']); ?>" data-sym="<?php echo esc_attr($r['symbol']); ?>" data-cc="<?php echo esc_attr(mp_candle_key_for($r['key'])); ?>">
   <td><span class="mp-commod__name"><?php echo esc_html($r['label']); ?><small><?php echo esc_html(str_replace('=F', ' futures', $r['symbol'])); ?></small></span></td>
   <td class="num" data-role="price"><?php echo $fmt($r['price']); ?> <span class="mp-commod__inr" style="font-size:11px"><?php echo esc_html($r['currency'] ?: 'USD'); ?></span></td>
   <td class="num mp-commod__inr"><?php echo $r['inr'] !== null ? '&#8377;' . number_format($r['inr']) . '<span style="font-size:10px"> ' . esc_html($r['inrUnit']) . '</span>' : '—'; ?></td>
@@ -2261,205 +2283,379 @@ function mp_md_commod_row_html($r, $spk) {
 
 
 /* ============================================================================
- * TRADINGVIEW CHARTS (v1.8.0) — [mp_tv_chart]
- * Full candlestick + volume + indicators + drawing-tools chart via
- * TradingView's Advanced Chart widget. MCX / NSE / BSE / COMEX / NYMEX / ICE
- * symbols. Theme-aware, lazy-loaded (tv.js only when a chart nears the
- * viewport), optional symbol switcher. One helper block per page.
+ * CANDLESTICK CHARTS (v1.9.0) — [mp_candle_chart] / [mp_tv_chart] (alias)
+ * TradingView-style candles + volume via the MIT-licensed lightweight-charts
+ * library, fed by our own cached market data (Yahoo v8 OHLCV). Works for
+ * Indian indices/stocks (.NS / ^NSEI ...), MCX-style INR-converted bullion,
+ * global commodities, FX and crypto. Timeframe toggle, symbol switcher,
+ * theme-aware, lazy-loaded. No third-party symbol restrictions.
  * ==========================================================================*/
 
-function mp_tv_symbol_map() {
+const MP_LWC_VER = '4.1.3';
+
+/** key => [yahoo symbol, label, inr-mode|null]  (inr-mode: 'oz10g' | 'ozkg') */
+function mp_candle_symbol_map() {
     return array(
-        'gold'      => array('MCX:GOLD1!',       'Gold'),
-        'silver'    => array('MCX:SILVER1!',     'Silver'),
-        'crude'     => array('MCX:CRUDEOIL1!',   'Crude Oil'),
-        'wti'       => array('NYMEX:CL1!',       'WTI Crude'),
-        'brent'     => array('TVC:UKOIL',        'Brent'),
-        'natgas'    => array('MCX:NATURALGAS1!', 'Natural Gas'),
-        'gasoline'  => array('NYMEX:RB1!',       'Gasoline'),
-        'heatoil'   => array('NYMEX:HO1!',       'Heating Oil'),
-        'platinum'  => array('NYMEX:PL1!',       'Platinum'),
-        'palladium' => array('NYMEX:PA1!',       'Palladium'),
-        'copper'    => array('MCX:COPPER1!',     'Copper'),
-        'aluminium' => array('MCX:ALUMINIUM1!',  'Aluminium'),
-        'zinc'      => array('MCX:ZINC1!',       'Zinc'),
-        'lead'      => array('MCX:LEAD1!',       'Lead'),
-        'nickel'    => array('MCX:NICKEL1!',     'Nickel'),
-        'corn'      => array('CBOT:ZC1!',        'Corn'),
-        'wheat'     => array('CBOT:ZW1!',        'Wheat'),
-        'soybean'   => array('CBOT:ZS1!',        'Soybeans'),
-        'coffee'    => array('ICEUS:KC1!',       'Coffee'),
-        'sugar'     => array('ICEUS:SB1!',       'Sugar'),
-        'cotton'    => array('ICEUS:CT1!',       'Cotton'),
-        'nifty'     => array('NSE:NIFTY',        'Nifty 50'),
-        'sensex'    => array('BSE:SENSEX',       'Sensex'),
-        'banknifty' => array('NSE:CNXBANK',      'Bank Nifty'),
-        'bitcoin'   => array('BINANCE:BTCUSDT',  'Bitcoin'),
-        'usdinr'    => array('FX_IDC:USDINR',    'USD / INR'),
+        'gold'      => array('GC=F',        'Gold (INR/10g)', 'oz10g'),
+        'silver'    => array('SI=F',        'Silver (INR/kg)', 'ozkg'),
+        'crude'     => array('CL=F',        'Crude Oil WTI ($)', null),
+        'wti'       => array('CL=F',        'Crude Oil WTI ($)', null),
+        'brent'     => array('BZ=F',        'Brent Crude ($)',   null),
+        'natgas'    => array('NG=F',        'Natural Gas ($)',   null),
+        'gasoline'  => array('RB=F',        'Gasoline ($)',      null),
+        'heatoil'   => array('HO=F',        'Heating Oil ($)',   null),
+        'platinum'  => array('PL=F',        'Platinum ($)',      null),
+        'palladium' => array('PA=F',        'Palladium ($)',     null),
+        'copper'    => array('HG=F',        'Copper ($)',        null),
+        'aluminium' => array('ALI=F',       'Aluminium ($)',     null),
+        'corn'      => array('ZC=F',        'Corn',              null),
+        'wheat'     => array('ZW=F',        'Wheat',             null),
+        'soybean'   => array('ZS=F',        'Soybeans',          null),
+        'coffee'    => array('KC=F',        'Coffee',            null),
+        'sugar'     => array('SB=F',        'Sugar',             null),
+        'cotton'    => array('CT=F',        'Cotton',            null),
+        'nifty'     => array('^NSEI',       'Nifty 50',          null),
+        'sensex'    => array('^BSESN',      'Sensex',            null),
+        'banknifty' => array('^NSEBANK',    'Bank Nifty',        null),
+        'niftyit'   => array('^CNXIT',      'Nifty IT',          null),
+        'usdinr'    => array('INR=X',       'USD / INR',         null),
+        'bitcoin'   => array('BTC-USD',     'Bitcoin ($)',       null),
+        'ethereum'  => array('ETH-USD',     'Ethereum ($)',      null),
+        'reliance'  => array('RELIANCE.NS', 'Reliance',          null),
+        'tcs'       => array('TCS.NS',      'TCS',               null),
+        'infy'      => array('INFY.NS',     'Infosys',           null),
+        'hdfcbank'  => array('HDFCBANK.NS', 'HDFC Bank',         null),
+        'sp500'     => array('^GSPC',       'S&P 500',           null),
+        'nasdaq'    => array('^IXIC',       'Nasdaq',            null),
     );
 }
 
-/** "gold" -> [MCX:GOLD1!, Gold]; "NSE:RELIANCE" -> passthrough; "reliance" -> NSE:RELIANCE */
-function mp_tv_resolve($s) {
+/** "gold" -> [GC=F, Gold ..., oz10g]; "RELIANCE.NS"/"^NSEI"/"BTC-USD" passthrough; "NSE:TCS" -> TCS.NS; "tcs" -> TCS.NS */
+function mp_candle_resolve($s) {
     $s = trim((string) $s);
-    if ($s === '') return array('NSE:NIFTY', 'Nifty 50');
-    $map = mp_tv_symbol_map();
+    if ($s === '') return array('^NSEI', 'Nifty 50', null);
+    $map = mp_candle_symbol_map();
     $k = strtolower($s);
     if (isset($map[$k])) return $map[$k];
-    if (strpos($s, ':') !== false) {
-        $parts = explode(':', $s, 2);
-        return array($s, $parts[1]);
-    }
-    return array('NSE:' . strtoupper($s), strtoupper($s));
+    if (stripos($s, 'NSE:') === 0) { $t = substr($s, 4) . '.NS'; return array($t, strtoupper(substr($s, 4)), null); }
+    if (stripos($s, 'BSE:') === 0) { $t = substr($s, 4) . '.BO'; return array($t, strtoupper(substr($s, 4)), null); }
+    if (preg_match('/[.\^=]|-USD$/', $s)) return array($s, $s, null);
+    return array(strtoupper($s) . '.NS', strtoupper($s), null);
 }
 
-function mp_tv_assets_html() {
+function mp_candle_tf_map($tf) {
+    $m = array(
+        '5m'  => array('range' => '1d',  'interval' => '5m',  'ttl' => 60),
+        '15m' => array('range' => '5d',  'interval' => '15m', 'ttl' => 120),
+        '1h'  => array('range' => '1mo', 'interval' => '60m', 'ttl' => 300),
+        '1D'  => array('range' => '1y',  'interval' => '1d',  'ttl' => 1800),
+        '1W'  => array('range' => '5y',  'interval' => '1wk', 'ttl' => 21600),
+    );
+    return isset($m[$tf]) ? $m[$tf] : $m['1D'];
+}
+
+/** OHLCV bars for a symbol/key + timeframe. Cached per (symbol,tf). */
+function mp_candle_ohlc($symbol_or_key, $tf) {
+    list($sym, $label, $inr) = mp_candle_resolve($symbol_or_key);
+    $cfg = mp_candle_tf_map($tf);
+    $ck  = 'mp_ohlc_' . md5($sym . '|' . $tf);
+    $c   = get_transient($ck);
+    if (is_array($c)) return $c;
+
+    $url = 'https://query1.finance.yahoo.com/v8/finance/chart/' . rawurlencode($sym)
+         . '?range=' . $cfg['range'] . '&interval=' . $cfg['interval'];
+    $res = wp_remote_get($url, array('timeout' => 9, 'headers' => array(
+        'User-Agent' => 'Mozilla/5.0 (compatible; MoneyPuran/1.0; +https://moneypuran.com)',
+        'Accept'     => 'application/json',
+    )));
+    if (is_wp_error($res) || wp_remote_retrieve_response_code($res) !== 200) {
+        return array('symbol' => $sym, 'label' => $label, 'inr' => (bool) $inr, 'tf' => $tf, 'bars' => array());
+    }
+    $j = json_decode(wp_remote_retrieve_body($res), true);
+    $r = isset($j['chart']['result'][0]) ? $j['chart']['result'][0] : null;
+    $ts = $r['timestamp'] ?? array();
+    $q  = $r['indicators']['quote'][0] ?? array();
+    $O = $q['open'] ?? array(); $H = $q['high'] ?? array(); $L = $q['low'] ?? array();
+    $C = $q['close'] ?? array(); $V = $q['volume'] ?? array();
+
+    $factor = 1.0;
+    if ($inr) {
+        $usdinr = mp_candle_usdinr();
+        $factor = ($inr === 'ozkg') ? ($usdinr / 31.1035 * 1000) : ($usdinr / 31.1035 * 10);
+        $factor *= (float) apply_filters('mp_gold_india_multiplier', 1.13);
+    }
+    $bars = array();
+    foreach ($ts as $i => $t) {
+        if (!isset($O[$i], $H[$i], $L[$i], $C[$i]) || $C[$i] === null || $O[$i] === null) continue;
+        $bars[] = array(
+            (int) $t,
+            round($O[$i] * $factor, $inr ? 0 : 4),
+            round($H[$i] * $factor, $inr ? 0 : 4),
+            round($L[$i] * $factor, $inr ? 0 : 4),
+            round($C[$i] * $factor, $inr ? 0 : 4),
+            isset($V[$i]) && $V[$i] !== null ? (int) $V[$i] : 0,
+        );
+    }
+    $out = array('symbol' => $sym, 'label' => $label, 'inr' => (bool) $inr, 'tf' => $tf, 'bars' => $bars);
+    if ($bars) set_transient($ck, $out, $cfg['ttl']);
+    return $out;
+}
+
+function mp_candle_usdinr() {
+    $g = get_transient(MP_MD_GRP_KEY);
+    if (is_array($g)) {
+        foreach (($g['currencies'] ?? array()) as $r) {
+            if ($r['sym'] === 'INR=X' && !empty($r['price'])) return (float) $r['price'];
+        }
+    }
+    $q = mp_md_yahoo_one('INR=X');
+    return $q ? (float) $q['price'] : 88.0;
+}
+
+add_action('rest_api_init', function () {
+    register_rest_route('mp/v1', '/ohlc', array(
+        'methods' => 'GET', 'permission_callback' => '__return_true',
+        'args' => array('symbol' => array('default' => 'nifty'), 'tf' => array('default' => '1D')),
+        'callback' => function (WP_REST_Request $req) {
+            $d = mp_candle_ohlc($req->get_param('symbol'), $req->get_param('tf'));
+            if (empty($d['bars'])) return new WP_Error('nodata', 'No chart data', array('status' => 502));
+            $resp = rest_ensure_response($d);
+            $resp->header('Cache-Control', 'public, max-age=30, s-maxage=45, stale-while-revalidate=120');
+            return $resp;
+        },
+    ));
+});
+
+function mp_candle_assets_html() {
     static $done = false;
     if ($done) return '';
     $done = true;
+    $lib = 'https://cdn.jsdelivr.net/npm/lightweight-charts@' . MP_LWC_VER . '/dist/lightweight-charts.standalone.production.js';
     ob_start(); ?>
 <script>
 (function(){
-  if (window.__mpTV) return;
-  var TV = window.__mpTV = { q: [], loaded: false, loading: false, widgets: [] };
-  TV.theme = function(){
+  if (window.__mpLWC) return;
+  var L = window.__mpLWC = { loaded:false, loading:false, q:[], src:<?php echo wp_json_encode($lib); ?> };
+  L.load = function(cb){
+    if (L.loaded && window.LightweightCharts) return cb();
+    L.q.push(cb);
+    if (L.loading) return;
+    L.loading = true;
+    var s = document.createElement('script');
+    s.src = L.src; s.async = true;
+    s.onload = function(){ L.loaded = true; L.q.splice(0).forEach(function(f){ try{ f(); }catch(e){} }); };
+    s.onerror = function(){ L.loading = false; };
+    document.head.appendChild(s);
+  };
+  L.theme = function(){
     var t = document.documentElement.getAttribute('data-theme');
     if (t === 'dark' || t === 'light') return t;
     return (window.matchMedia && matchMedia('(prefers-color-scheme:dark)').matches) ? 'dark' : 'light';
   };
-  TV.load = function(cb){
-    if (TV.loaded && window.TradingView) return cb();
-    TV.q.push(cb);
-    if (TV.loading) return;
-    TV.loading = true;
-    var s = document.createElement('script');
-    s.src = 'https://s3.tradingview.com/tv.js';
-    s.async = true;
-    s.onload = function(){ TV.loaded = true; var q = TV.q.splice(0); q.forEach(function(f){ try{ f(); }catch(e){} }); };
-    s.onerror = function(){ TV.loading = false; };
-    document.head.appendChild(s);
+  L.palette = function(){
+    return L.theme() === 'dark'
+      ? { bg:'#111827', text:'#94a3b8', grid:'rgba(255,255,255,.06)', border:'rgba(255,255,255,.12)' }
+      : { bg:'#ffffff', text:'#64748b', grid:'#eef1f4', border:'#e2e8f0' };
   };
-  TV.make = function(elId, symbol, interval){
+  L.charts = [];
+  function retheme(){ L.charts.forEach(function(c){ if (c.apply) c.apply(); }); }
+  new MutationObserver(retheme).observe(document.documentElement, { attributes:true, attributeFilter:['data-theme'] });
+  if (window.matchMedia) { try { matchMedia('(prefers-color-scheme:dark)').addEventListener('change', retheme); } catch(e){} }
+
+  L.make = function(elId, endpoint, symbol, tf){
     var host = document.getElementById(elId);
     if (!host) return null;
-    var rec = { elId: elId, symbol: symbol, interval: interval || 'D', w: null };
-    rec.build = function(){
-      if (!window.TradingView) return;
-      host.innerHTML = '';
-      rec.w = new TradingView.widget({
-        autosize: true,
-        symbol: rec.symbol,
-        interval: rec.interval,
-        timezone: 'Asia/Kolkata',
-        theme: TV.theme(),
-        style: '1',
-        locale: 'in',
-        enable_publishing: false,
-        withdateranges: true,
-        allow_symbol_change: true,
-        hide_side_toolbar: (window.innerWidth < 760),
-        container_id: elId,
-        support_host: 'https://www.tradingview.com'
+    var rec = { symbol:symbol, tf:tf||'1D', chart:null, candle:null, vol:null, _go:0 };
+
+    rec.apply = function(){
+      if (!rec.chart) return;
+      var p = L.palette();
+      rec.chart.applyOptions({
+        layout:{ background:{ color:p.bg }, textColor:p.text },
+        grid:{ vertLines:{ color:p.grid }, horzLines:{ color:p.grid } },
+        rightPriceScale:{ borderColor:p.border },
+        timeScale:{ borderColor:p.border }
       });
     };
-    rec.setSymbol = function(sym){ rec.symbol = sym; TV.load(rec.build); };
-    TV.widgets.push(rec);
+    rec.build = function(){
+      if (!window.LightweightCharts) return;
+      host.innerHTML = '';
+      var p = L.palette();
+      rec.chart = LightweightCharts.createChart(host, {
+        autoSize:true,
+        layout:{ background:{ color:p.bg }, textColor:p.text, fontFamily:'inherit' },
+        grid:{ vertLines:{ color:p.grid }, horzLines:{ color:p.grid } },
+        rightPriceScale:{ borderColor:p.border, scaleMargins:{ top:0.08, bottom:0.28 } },
+        timeScale:{ borderColor:p.border, timeVisible:(rec.tf==='5m'||rec.tf==='15m'||rec.tf==='1h'), secondsVisible:false },
+        crosshair:{ mode:1 },
+        localization:{ locale:'en-IN' }
+      });
+      rec.candle = rec.chart.addCandlestickSeries({
+        upColor:'#16a34a', downColor:'#dc2626', borderVisible:false,
+        wickUpColor:'#16a34a', wickDownColor:'#dc2626'
+      });
+      rec.vol = rec.chart.addHistogramSeries({ priceFormat:{ type:'volume' }, priceScaleId:'v' });
+      rec.chart.priceScale('v').applyOptions({ scaleMargins:{ top:0.82, bottom:0 } });
+      L.charts.push(rec);
+      rec.fetch();
+    };
+    rec.fetch = function(){
+      if (!rec.candle) return;
+      host.style.opacity = '.5';
+      fetch(endpoint + '?symbol=' + encodeURIComponent(rec.symbol) + '&tf=' + encodeURIComponent(rec.tf), { credentials:'omit' })
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(d){
+          host.style.opacity = '1';
+          if (!d || !d.bars || !d.bars.length) { return; }
+          var c = [], v = [];
+          d.bars.forEach(function(b){
+            c.push({ time:b[0], open:b[1], high:b[2], low:b[3], close:b[4] });
+            v.push({ time:b[0], value:b[5], color: b[4] >= b[1] ? 'rgba(22,163,74,.5)' : 'rgba(220,38,38,.5)' });
+          });
+          rec.candle.setData(c);
+          rec.vol.setData(v);
+          rec.chart.timeScale().fitContent();
+          var meta = host.parentNode.querySelector('[data-role=meta]');
+          if (meta && c.length) {
+            var last = c[c.length-1].close, first = c[0].open;
+            var chg = first ? ((last-first)/first*100) : 0;
+            var sym = d.inr ? '₹' : '';
+            meta.innerHTML = '<b>' + sym + last.toLocaleString('en-IN') + '</b> '
+              + '<span style="color:' + (chg>=0?'#16a34a':'#dc2626') + ';font-weight:600">'
+              + (chg>=0?'▲ ':'▼ ') + Math.abs(chg).toFixed(2) + '%</span> '
+              + '<span style="opacity:.6">' + d.tf + '</span>';
+          }
+        })
+        .catch(function(){ host.style.opacity = '1'; });
+    };
+    rec.setSymbol = function(s){ rec.symbol = s; L.load(rec.fetch); };
+    rec.setTf = function(t){ rec.tf = t; if (rec.chart){ rec.chart.applyOptions({ timeScale:{ timeVisible:(t==='5m'||t==='15m'||t==='1h') } }); } L.load(rec.fetch); };
+
     function near(){
       var r = host.getBoundingClientRect();
       var vh = window.innerHeight || document.documentElement.clientHeight;
       return r.width > 0 && r.bottom > -500 && r.top < vh + 500;
     }
-    function go(){ if (rec.w || rec._go) return; rec._go = 1; TV.load(rec.build); cleanup(); }
+    function go(){ if (rec.chart || rec._go) return; rec._go = 1; cleanup(); L.load(rec.build); }
     function onScroll(){ if (near()) go(); }
     function cleanup(){ window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); }
     if ('IntersectionObserver' in window){
-      var io = new IntersectionObserver(function(es){
-        es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); go(); } });
-      }, { rootMargin: '500px' });
+      var io = new IntersectionObserver(function(es){ es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); go(); } }); }, { rootMargin:'500px' });
       io.observe(host);
     }
-    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive:true });
     window.addEventListener('resize', onScroll);
     setTimeout(function(){ if (near()) go(); }, 250);
     setTimeout(function(){ if (near()) go(); }, 1200);
     return rec;
   };
-  var last = TV.theme();
-  function reTheme(){
-    var now = TV.theme();
-    if (now === last) return;
-    last = now;
-    TV.widgets.forEach(function(r){ if (r.w) TV.load(r.build); });
-  }
-  new MutationObserver(reTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  if (window.matchMedia) { try { matchMedia('(prefers-color-scheme:dark)').addEventListener('change', reTheme); } catch(e){} }
 }());
 </script>
 <style>
-.mp-tvc{margin:22px 0}
-.mp-tvc__bar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
-.mp-tvc__bar button{border:1px solid var(--mp-border,#cbd5e1);background:transparent;color:inherit;padding:6px 12px;border-radius:20px;font-size:12.5px;font-weight:600;cursor:pointer}
-.mp-tvc__bar button.on{background:var(--mp-brand,#0057ff);border-color:var(--mp-brand,#0057ff);color:#fff}
-.mp-tvc__box{height:clamp(360px,64vh,520px);width:100%;border:1px solid var(--mp-border,#e5e7eb);border-radius:12px;overflow:hidden;background:var(--mp-surface,#fff)}
-.mp-tvc__note{font-size:11px;color:var(--mp-muted,#64748b);margin:8px 0 0}
-@media(max-width:600px){.mp-tvc__box{height:380px}}
-html[data-theme="dark"] .mp-tvc__box{border-color:rgba(255,255,255,.08);background:#111827}
+.mp-cc{margin:22px 0}
+.mp-cc__head{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:baseline;margin-bottom:8px}
+.mp-cc__title{font-weight:700;font-size:15px}
+.mp-cc__meta{font-size:13px;color:var(--mp-muted,#64748b)}
+.mp-cc__meta b{font-size:16px;color:var(--mp-ink,#0f172a)}
+html[data-theme="dark"] .mp-cc__meta b{color:#f1f5f9}
+.mp-cc__pills,.mp-cc__tf{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.mp-cc__pills button,.mp-cc__tf button{border:1px solid var(--mp-border,#cbd5e1);background:transparent;color:inherit;padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer}
+.mp-cc__pills button.on,.mp-cc__tf button.on{background:var(--mp-brand,#0057ff);border-color:var(--mp-brand,#0057ff);color:#fff}
+.mp-cc__box{height:clamp(340px,58vh,480px);width:100%;border:1px solid var(--mp-border,#e5e7eb);border-radius:12px;overflow:hidden;background:var(--mp-surface,#fff)}
+.mp-cc__note{font-size:11px;color:var(--mp-muted,#64748b);margin:8px 0 0}
+@media(max-width:600px){.mp-cc__box{height:340px}}
+html[data-theme="dark"] .mp-cc__box{border-color:rgba(255,255,255,.08);background:#111827}
 </style>
     <?php
     return ob_get_clean();
 }
-add_action('wp_footer', function () { echo mp_tv_assets_html(); }, 5);
+add_action('wp_footer', function () { echo mp_candle_assets_html(); }, 5);
 
-/* --------------------------- [mp_tv_chart] --------------------------- */
-add_shortcode('mp_tv_chart', function ($atts) {
+function mp_candle_chart_shortcode($atts) {
     $a = shortcode_atts(array(
         'symbol'   => 'nifty',
         'symbols'  => '',
-        'interval' => 'D',
+        'tf'       => '1D',
+        'interval' => '',   // back-compat with [mp_tv_chart interval=]
         'height'   => '',
-    ), $atts, 'mp_tv_chart');
+    ), $atts, 'mp_candle_chart');
 
-    list($sym, ) = mp_tv_resolve($a['symbol']);
-    $switch = array();
+    $tf = in_array($a['tf'], array('5m', '15m', '1h', '1D', '1W'), true) ? $a['tf'] : '1D';
+    list($ySym, $label, ) = mp_candle_resolve($a['symbol']);
+
+    $pills = array();
     if ($a['symbols'] !== '') {
         foreach (explode(',', $a['symbols']) as $s) {
             if (trim($s) === '') continue;
-            $switch[] = mp_tv_resolve($s);
+            $r = mp_candle_resolve($s);
+            $pills[] = array(strtolower(trim($s)), $r[1]);
         }
     }
-    $id = 'mptvc_' . wp_generate_password(8, false, false);
+    $id = 'mpcc_' . wp_generate_password(8, false, false);
     $h  = $a['height'] !== '' ? (int) preg_replace('/[^0-9]/', '', $a['height']) : 0;
 
     ob_start(); ?>
-<div class="mp-tvc">
-  <?php if ($switch) : ?>
-  <div class="mp-tvc__bar" data-role="bar">
-    <?php foreach ($switch as $i => $s) : ?>
-    <button type="button" data-s="<?php echo esc_attr($s[0]); ?>" class="<?php echo $i === 0 ? 'on' : ''; ?>"><?php echo esc_html($s[1]); ?></button>
+<div class="mp-cc" data-symbol="<?php echo esc_attr(strtolower($a['symbol'])); ?>">
+  <div class="mp-cc__head">
+    <span class="mp-cc__title" data-role="title"><?php echo esc_html($label); ?></span>
+    <span class="mp-cc__meta" data-role="meta">Loading&hellip;</span>
+  </div>
+  <?php if ($pills) : ?>
+  <div class="mp-cc__pills" data-role="pills">
+    <?php foreach ($pills as $i => $p) : ?>
+    <button type="button" data-s="<?php echo esc_attr($p[0]); ?>" class="<?php echo $i === 0 ? 'on' : ''; ?>"><?php echo esc_html($p[1]); ?></button>
     <?php endforeach; ?>
   </div>
   <?php endif; ?>
-  <div class="mp-tvc__box" id="<?php echo esc_attr($id); ?>"<?php echo $h ? ' style="height:' . $h . 'px"' : ''; ?>></div>
-  <p class="mp-tvc__note">Interactive chart &amp; data by TradingView. Exchange data may be delayed. Nothing here is investment advice.</p>
+  <div class="mp-cc__tf" data-role="tf">
+    <?php foreach (array('5m', '15m', '1h', '1D', '1W') as $t) : ?>
+    <button type="button" data-t="<?php echo esc_attr($t); ?>" class="<?php echo $t === $tf ? 'on' : ''; ?>"><?php echo esc_html(strtoupper($t)); ?></button>
+    <?php endforeach; ?>
+  </div>
+  <div class="mp-cc__box" id="<?php echo esc_attr($id); ?>"<?php echo $h ? ' style="height:' . $h . 'px"' : ''; ?>></div>
+  <p class="mp-cc__note">Candles &amp; volume from exchange data (Yahoo Finance), cached and possibly delayed. Bullion is the international price converted to an indicative INR rate. Not investment advice.</p>
 </div>
 <script>
 (function(){
   var id = <?php echo wp_json_encode($id); ?>;
-  function go(){
-    if (!window.__mpTV) { return setTimeout(go, 120); }
-    var rec = window.__mpTV.make(id, <?php echo wp_json_encode($sym); ?>, <?php echo wp_json_encode($a['interval']); ?>);
-    var box = document.getElementById(id);
-    var bar = box && box.parentNode.querySelector('[data-role=bar]');
-    if (bar && rec) bar.addEventListener('click', function(e){
+  var EP = <?php echo wp_json_encode(esc_url_raw(home_url('/wp-json/mp/v1/ohlc'))); ?>;
+  function boot(){
+    if (!window.__mpLWC) return setTimeout(boot, 120);
+    var rec = window.__mpLWC.make(id, EP, <?php echo wp_json_encode(strtolower($a['symbol'])); ?>, <?php echo wp_json_encode($tf); ?>);
+    var root = document.getElementById(id).closest('.mp-cc');
+    var titleEl = root.querySelector('[data-role=title]');
+    var pills = root.querySelector('[data-role=pills]');
+    if (pills) pills.addEventListener('click', function(e){
       var b = e.target.closest('button[data-s]'); if (!b) return;
-      [].forEach.call(bar.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+      [].forEach.call(pills.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
       b.classList.add('on');
+      if (titleEl) titleEl.textContent = b.textContent;
       rec.setSymbol(b.getAttribute('data-s'));
     });
+    root.querySelector('[data-role=tf]').addEventListener('click', function(e){
+      var b = e.target.closest('button[data-t]'); if (!b) return;
+      [].forEach.call(root.querySelectorAll('[data-role=tf] button'), function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      rec.setTf(b.getAttribute('data-t'));
+    });
   }
-  go();
+  boot();
 }());
 </script>
     <?php
-    return mp_tv_assets_html() . ob_get_clean();
-});
+    return mp_candle_assets_html() . ob_get_clean();
+}
+add_shortcode('mp_candle_chart', 'mp_candle_chart_shortcode');
+add_shortcode('mp_tv_chart', 'mp_candle_chart_shortcode');
+
+/* commodities-page row expand + stock "Why?" panel look these up */
+function mp_candle_key_for($commod_key) {
+    $map = array(
+        'wti' => 'crude', 'brent' => 'brent', 'natgas' => 'natgas', 'gasoline' => 'gasoline',
+        'heatoil' => 'heatoil', 'gold' => 'gold', 'silver' => 'silver', 'platinum' => 'platinum',
+        'palladium' => 'palladium', 'copper' => 'copper', 'aluminium' => 'aluminium',
+        'corn' => 'corn', 'wheat' => 'wheat', 'soybean' => 'soybean', 'coffee' => 'coffee',
+        'sugar' => 'sugar', 'cotton' => 'cotton',
+    );
+    return isset($map[$commod_key]) ? $map[$commod_key] : $commod_key;
+}
