@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.5.1
+ * Version: 1.6.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -251,6 +251,13 @@ add_action('mp_md_cron_groups', function () {
     delete_transient(MP_MD_LOCK_GRP);
     $g = mp_md_build_groups();
     if (!empty($g['world']) || !empty($g['currencies'])) { $g['_at'] = time(); set_transient(MP_MD_GRP_KEY, $g, MP_MD_HARD_TTL); }
+    // Warm the rate-page history transients so the chart/insights never block a page render.
+    if (function_exists('mp_md_series')) {
+        foreach (array('gold', 'silver', 'crude') as $s) {
+            mp_md_series($s, '6mo');
+            if ($s === 'gold') mp_md_series($s, '1mo');
+        }
+    }
 });
 add_action('init', function () {
     if (!wp_next_scheduled('mp_md_cron_refresh')) wp_schedule_event(time() + 20, 'mp_md_1min', 'mp_md_cron_refresh');
@@ -1422,4 +1429,360 @@ add_shortcode('mp_fuel_prices', function ($atts) {
 </script>
     <?php
     return mp_rates_helpers_html() . ob_get_clean();
+});
+
+
+/* ============================================================================
+ * RATE-PAGE EXTRAS (v1.6.0)
+ *  - price history + [mp_rate_chart]  (commodity selector + range, inline SVG)
+ *  - [mp_commodities_widget]          (rate-page sidebar; replaces Live Markets)
+ *  - [mp_gold_insights]               (gold/silver ratio, making-charge table,
+ *                                      tax share, buy-timing helper)
+ * ==========================================================================*/
+
+function mp_md_series_symbols() {
+    return array(
+        'gold'   => array('sym' => 'GC=F', 'label' => 'Gold 24K (INR/10g)', 'inr' => true,  'grams' => 10),
+        'silver' => array('sym' => 'SI=F', 'label' => 'Silver (INR/kg)',    'inr' => true,  'grams' => 1000),
+        'crude'  => array('sym' => 'CL=F', 'label' => 'Crude Oil WTI ($/bbl)', 'inr' => false),
+        'brent'  => array('sym' => 'BZ=F', 'label' => 'Brent Crude ($/bbl)',   'inr' => false),
+        'natgas' => array('sym' => 'NG=F', 'label' => 'Natural Gas ($/MMBtu)', 'inr' => false),
+        'copper' => array('sym' => 'HG=F', 'label' => 'Copper ($/lb)',         'inr' => false),
+    );
+}
+
+/** Raw daily-close series for a Yahoo symbol. Cached ~30 min. */
+function mp_md_history_raw($symbol, $range = '6mo') {
+    $range = in_array($range, array('1mo', '3mo', '6mo', '1y', '2y'), true) ? $range : '6mo';
+    $key = 'mp_md_hist_' . md5($symbol . $range);
+    $c = get_transient($key);
+    if (is_array($c)) return $c;
+
+    $url = 'https://query1.finance.yahoo.com/v8/finance/chart/' . rawurlencode($symbol)
+         . '?range=' . $range . '&interval=1d';
+    $res = wp_remote_get($url, array('timeout' => 8, 'headers' => array(
+        'User-Agent' => 'Mozilla/5.0 (compatible; MoneyPuran/1.0; +https://moneypuran.com)',
+        'Accept'     => 'application/json',
+    )));
+    if (is_wp_error($res) || wp_remote_retrieve_response_code($res) !== 200) return array();
+    $j = json_decode(wp_remote_retrieve_body($res), true);
+    $r = isset($j['chart']['result'][0]) ? $j['chart']['result'][0] : null;
+    if (!$r || empty($r['timestamp'])) return array();
+    $ts = $r['timestamp'];
+    $cl = isset($r['indicators']['quote'][0]['close']) ? $r['indicators']['quote'][0]['close'] : array();
+    $out = array();
+    foreach ($ts as $i => $t) {
+        if (!isset($cl[$i]) || $cl[$i] === null) continue;
+        $out[] = array((int) $t, round((float) $cl[$i], 4));
+    }
+    if ($out) set_transient($key, $out, 30 * MINUTE_IN_SECONDS);
+    return $out;
+}
+
+/** Plot-ready series for one named commodity (gold/silver converted to indicative INR). */
+function mp_md_series($name, $range = '6mo') {
+    $map = mp_md_series_symbols();
+    if (!isset($map[$name])) return null;
+    $m = $map[$name];
+    $base = mp_md_history_raw($m['sym'], $range);
+    if (empty($base)) return null;
+
+    if (!empty($m['inr'])) {
+        $fx = mp_md_history_raw('INR=X', $range);
+        $fxBy = array();
+        foreach ($fx as $p) $fxBy[gmdate('Y-m-d', $p[0])] = $p[1];
+        $lastFx = end($fx);
+        $lastFx = $lastFx ? $lastFx[1] : 88.0;
+        $mult = (float) apply_filters('mp_gold_india_multiplier', 1.13);
+        $points = array();
+        foreach ($base as $p) {
+            $f = isset($fxBy[gmdate('Y-m-d', $p[0])]) ? $fxBy[gmdate('Y-m-d', $p[0])] : $lastFx;
+            $points[] = array($p[0], round($p[1] / 31.1035 * $f * $m['grams'] * $mult));
+        }
+    } else {
+        $points = array();
+        foreach ($base as $p) $points[] = array($p[0], round($p[1], 2));
+    }
+
+    $first = $points[0][1];
+    $lastP = end($points);
+    $last  = $lastP[1];
+    $chg   = ($first != 0) ? round(($last - $first) / $first * 100, 1) : 0;
+    return array(
+        'name' => $name, 'label' => $m['label'], 'inr' => !empty($m['inr']),
+        'range' => $range, 'points' => $points, 'first' => $first, 'last' => $last, 'chg' => $chg,
+    );
+}
+
+add_action('rest_api_init', function () {
+    register_rest_route('mp/v1', '/history', array(
+        'methods' => 'GET', 'permission_callback' => '__return_true',
+        'args' => array('series' => array('default' => 'gold'), 'range' => array('default' => '6mo')),
+        'callback' => function (WP_REST_Request $req) {
+            $d = mp_md_series($req->get_param('series'), $req->get_param('range'));
+            if (!$d) return new WP_Error('nodata', 'No history', array('status' => 502));
+            $resp = rest_ensure_response($d);
+            $resp->header('Cache-Control', 'public, max-age=600, s-maxage=1800, stale-while-revalidate=3600');
+            return $resp;
+        },
+    ));
+});
+
+/* --------------------------- [mp_rate_chart] --------------------------- */
+add_shortcode('mp_rate_chart', function ($atts) {
+    $def = isset($atts['series']) ? sanitize_key($atts['series']) : 'gold';
+    $map = mp_md_series_symbols();
+    if (!isset($map[$def])) $def = 'gold';
+    $seed = mp_md_series($def, '6mo');
+    $opts = '';
+    foreach ($map as $k => $m) {
+        $opts .= '<option value="' . esc_attr($k) . '"' . selected($k, $def, false) . '>' . esc_html($m['label']) . '</option>';
+    }
+    ob_start(); ?>
+<section class="mp-chart" id="mpRateChart" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/history')); ?>">
+  <div class="mp-chart__head">
+    <h2>Price chart</h2>
+    <select class="mp-chart__series" aria-label="Choose commodity"><?php echo $opts; ?></select>
+    <span class="mp-chart__range" role="tablist">
+      <button type="button" data-r="1mo">1M</button>
+      <button type="button" data-r="3mo">3M</button>
+      <button type="button" data-r="6mo" class="on">6M</button>
+      <button type="button" data-r="1y">1Y</button>
+    </span>
+  </div>
+  <div class="mp-chart__stat" data-role="stat"></div>
+  <div class="mp-chart__plot" data-role="plot" aria-label="price history chart"></div>
+  <p class="mp-chart__note">Indicative. Gold and silver are converted from international prices using the day's USD/INR rate with an India duty + GST adjustment, so they will differ from your local retail quote. Not investment advice.</p>
+</section>
+<style>
+.mp-chart{margin:22px 0;border:1px solid var(--mp-border,#e5e7eb);border-radius:12px;padding:16px;background:var(--mp-surface,#fff)}
+.mp-chart__head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
+.mp-chart__head h2{margin:0;font-size:18px;flex:1 1 auto}
+.mp-chart__series{padding:8px 10px;border:1px solid var(--mp-border,#cbd5e1);border-radius:8px;background:var(--mp-bg,#f8fafc);color:inherit;font-size:13px;max-width:60%}
+.mp-chart__range{display:inline-flex;border:1px solid var(--mp-border,#cbd5e1);border-radius:8px;overflow:hidden}
+.mp-chart__range button{border:0;background:transparent;color:inherit;padding:7px 11px;cursor:pointer;font-size:12px;font-weight:600}
+.mp-chart__range button.on{background:var(--mp-brand,#0057ff);color:#fff}
+.mp-chart__stat{font-size:14px;margin:4px 0 10px;min-height:26px}
+.mp-chart__stat b{font-size:20px}
+.mp-chart__stat i{font-style:normal;font-weight:600}
+.mp-chart__stat i.up{color:#16a34a}.mp-chart__stat i.dn{color:#dc2626}
+.mp-chart__plot{width:100%;height:220px;position:relative}
+.mp-chart__plot svg{width:100%;height:100%;display:block;overflow:visible}
+.mp-chart__note{font-size:11px;color:var(--mp-muted,#64748b);margin:8px 0 0}
+html[data-theme="dark"] .mp-chart{background:#111827;border-color:rgba(255,255,255,.08);color:#f1f5f9}
+html[data-theme="dark"] .mp-chart__series{background:#0a0f1e;border-color:rgba(255,255,255,.12);color:#f1f5f9}
+</style>
+<script>
+(function(){
+  var W=document.getElementById('mpRateChart'); if(!W) return;
+  var EP=W.getAttribute('data-endpoint'), sel=W.querySelector('.mp-chart__series'), rWrap=W.querySelector('.mp-chart__range'),
+      plot=W.querySelector('[data-role=plot]'), statEl=W.querySelector('[data-role=stat]'), range='6mo', DATA=null;
+  var LBL={'1mo':'1 month','3mo':'3 months','6mo':'6 months','1y':'1 year'};
+
+  function draw(d){
+    DATA=d;
+    var pts=d.points||[];
+    if(pts.length<2){ plot.innerHTML='<p style="opacity:.6;font-size:13px">Chart data unavailable right now.</p>'; statEl.innerHTML=''; return; }
+    var w=plot.clientWidth||600, h=plot.clientHeight||220, pad=6, padB=16;
+    var ys=pts.map(function(p){return p[1];}), min=Math.min.apply(null,ys), max=Math.max.apply(null,ys);
+    if(min===max){ min-=1; max+=1; }
+    var n=pts.length;
+    function X(i){ return pad + i/(n-1)*(w-2*pad); }
+    function Y(v){ return pad + (1-(v-min)/(max-min))*(h-pad-padB); }
+    var line='', area='';
+    pts.forEach(function(p,i){ var c=X(i).toFixed(1)+' '+Y(p[1]).toFixed(1); line+=(i?' L':'M')+c; area+=(i?' L':'M')+c; });
+    area+=' L'+X(n-1).toFixed(1)+' '+(h-padB)+' L'+X(0).toFixed(1)+' '+(h-padB)+' Z';
+    var up=d.chg>=0, col=up?'#16a34a':'#dc2626';
+    var t0=new Date(pts[0][0]*1000), t1=new Date(pts[n-1][0]*1000);
+    function dfmt(dt){ return dt.toLocaleDateString('en-IN',{month:'short',year:'2-digit'}); }
+    plot.innerHTML=
+      '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" role="img">'
+      +'<defs><linearGradient id="mpcg" x1="0" x2="0" y1="0" y2="1">'
+      +'<stop offset="0" stop-color="'+col+'" stop-opacity="0.22"/><stop offset="1" stop-color="'+col+'" stop-opacity="0"/></linearGradient></defs>'
+      +'<path d="'+area+'" fill="url(#mpcg)"/>'
+      +'<path d="'+line+'" fill="none" stroke="'+col+'" stroke-width="2" stroke-linejoin="round"/>'
+      +'<text x="'+pad+'" y="'+h+'" font-size="10" fill="#94a3b8">'+dfmt(t0)+'</text>'
+      +'<text x="'+(w-pad)+'" y="'+h+'" font-size="10" fill="#94a3b8" text-anchor="end">'+dfmt(t1)+'</text>'
+      +'</svg>';
+    var sym=d.inr?'₹':'', dec=d.inr?0:2;
+    var last=Number(d.last).toLocaleString('en-IN',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+    var lo=Number(min).toLocaleString('en-IN',{maximumFractionDigits:dec}), hi=Number(max).toLocaleString('en-IN',{maximumFractionDigits:dec});
+    statEl.innerHTML='<b>'+sym+last+'</b> <i class="'+(up?'up':'dn')+'">'+(up?'▲ ':'▼ ')+Math.abs(d.chg)+'% over '+(LBL[range]||range)+'</i>'
+      +' <span style="color:#94a3b8;font-size:12px">· range '+sym+lo+'–'+sym+hi+'</span>';
+  }
+  function load(){
+    plot.style.opacity='.5';
+    fetch(EP+'?series='+encodeURIComponent(sel.value)+'&range='+range,{credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){ plot.style.opacity='1'; if(d&&d.points) draw(d); else { plot.innerHTML='<p style="opacity:.6;font-size:13px">Chart data unavailable right now.</p>'; } })
+      .catch(function(){ plot.style.opacity='1'; });
+  }
+  sel.addEventListener('change', load);
+  rWrap.addEventListener('click', function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    rWrap.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on'); range=b.getAttribute('data-r'); load();
+  });
+  var rt; window.addEventListener('resize', function(){ clearTimeout(rt); rt=setTimeout(function(){ if(DATA) draw(DATA); }, 150); });
+  <?php if ($seed) : ?>draw(<?php echo wp_json_encode($seed); ?>);<?php endif; ?>
+  load();
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
+
+/* --------------------------- [mp_commodities_widget] (sidebar) --------------------------- */
+add_shortcode('mp_commodities_widget', function () {
+    $grp  = mp_md_get_groups();
+    $rows = (is_array($grp) && !empty($grp['commodities'])) ? $grp['commodities'] : array();
+    $b    = (is_array($grp) && !empty($grp['bullion_inr'])) ? $grp['bullion_inr'] : null;
+    $mult = (float) apply_filters('mp_gold_india_multiplier', 1.13);
+    ob_start(); ?>
+<div class="mp-widget mp-commodw">
+  <h3 class="mp-widget-title">Commodities &amp; bullion</h3>
+  <div class="mp-commodw__list" id="mpCommodWidget" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/markets?only=dashboard')); ?>" data-mult="<?php echo esc_attr($mult); ?>">
+    <?php if ($b) : ?>
+      <div class="mp-commodw__row"><span>Gold 24K &middot; 10g</span><span>&#8377;<?php echo number_format($b['gold_24k_10g'] * $mult); ?></span><span></span></div>
+      <?php if (!empty($b['silver_kg'])) : ?>
+      <div class="mp-commodw__row"><span>Silver &middot; 1kg</span><span>&#8377;<?php echo number_format($b['silver_kg'] * $mult); ?></span><span></span></div>
+      <?php endif; ?>
+    <?php endif; ?>
+    <?php foreach ($rows as $r) : $up = (isset($r['chgPct']) ? $r['chgPct'] : 0) >= 0; $p = (float) $r['price']; ?>
+      <div class="mp-commodw__row"><span><?php echo esc_html($r['label']); ?></span>
+        <span><?php echo ($p < 10 ? number_format($p, 3) : number_format($p, 2)); ?></span>
+        <span class="<?php echo $up ? 'up' : 'dn'; ?>"><?php echo ($up ? '+' : '') . number_format((float) (isset($r['chgPct']) ? $r['chgPct'] : 0), 2); ?>%</span></div>
+    <?php endforeach; ?>
+  </div>
+  <a href="<?php echo esc_url(home_url('/gold-rates/')); ?>" class="mp-commodw__more">Full gold &amp; silver rates &rarr;</a>
+</div>
+<style>
+.mp-commodw__row{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:7px 0;border-top:1px solid var(--mp-border,#eef1f4);font-size:12.5px;font-variant-numeric:tabular-nums;align-items:baseline}
+.mp-commodw__row:first-child{border-top:0}
+.mp-commodw__row span:nth-child(3){min-width:52px;text-align:right}
+.mp-commodw__row .up{color:#16a34a}.mp-commodw__row .dn{color:#dc2626}
+.mp-commodw__more{display:inline-block;margin-top:10px;font-size:12px;font-weight:600;color:var(--mp-brand,#0057ff)}
+html[data-theme="dark"] .mp-commodw__row{border-color:rgba(255,255,255,.08)}
+</style>
+<script>
+(function(){
+  var W=document.getElementById('mpCommodWidget'); if(!W) return;
+  var mult=parseFloat(W.getAttribute('data-mult'))||1.13;
+  function inr(n){ return '₹'+Math.round(n).toLocaleString('en-IN'); }
+  fetch(W.getAttribute('data-endpoint'),{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if(!d) return;
+    var h='';
+    if(d.bullion_inr){
+      h+='<div class="mp-commodw__row"><span>Gold 24K · 10g</span><span>'+inr(d.bullion_inr.gold_24k_10g*mult)+'</span><span></span></div>';
+      if(d.bullion_inr.silver_kg) h+='<div class="mp-commodw__row"><span>Silver · 1kg</span><span>'+inr(d.bullion_inr.silver_kg*mult)+'</span><span></span></div>';
+    }
+    (d.commodities||[]).forEach(function(r){
+      var up=(r.chgPct||0)>=0, p=Number(r.price);
+      h+='<div class="mp-commodw__row"><span>'+r.label+'</span><span>'+(p<10?p.toFixed(3):p.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}))+'</span>'
+        +'<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+Number(r.chgPct||0).toFixed(2)+'%</span></div>';
+    });
+    if(h) W.innerHTML=h;
+  }).catch(function(){});
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
+
+/* --------------------------- [mp_gold_insights] --------------------------- */
+add_shortcode('mp_gold_insights', function () {
+    $grp = mp_md_get_groups();
+    $b   = (is_array($grp) && !empty($grp['bullion_inr'])) ? $grp['bullion_inr'] : null;
+    if (!$b) return '';
+    $mult = (float) apply_filters('mp_gold_india_multiplier', 1.13);
+
+    $g24_10  = $b['gold_24k_10g'] * $mult;
+    $g_per_g = $g24_10 / 10;
+    $s_per_g = !empty($b['silver_kg']) ? $b['silver_kg'] * $mult / 1000 : null;
+    $ratio   = $s_per_g ? round($g_per_g / $s_per_g, 1) : null;
+
+    $ratio_read = '';
+    if ($ratio !== null) {
+        if ($ratio > 88)     $ratio_read = 'Silver is historically cheap against gold right now - the ratio usually sits in a 60-90 band.';
+        elseif ($ratio < 62) $ratio_read = 'Gold is historically cheap against silver right now - the ratio usually sits in a 60-90 band.';
+        else                 $ratio_read = 'The ratio is inside its usual 60-90 band, so neither metal looks stretched versus the other.';
+    }
+
+    $intl       = $b['gold_24k_10g'];
+    $bridge     = $g24_10 - $intl;
+    $bridge_pct = $g24_10 ? round($bridge / $g24_10 * 100) : 0;
+
+    $hist = mp_md_series('gold', '1mo');
+    $mom  = ($hist && !empty($hist['points']) && count($hist['points']) > 3) ? $hist['chg'] : null;
+
+    ob_start(); ?>
+<section class="mp-ins">
+  <h2>Gold &amp; silver insights</h2>
+  <div class="mp-ins__grid">
+    <div class="mp-ins__card">
+      <h4>Gold&ndash;silver ratio</h4>
+      <div class="mp-ins__big"><?php echo $ratio !== null ? esc_html($ratio) : '&mdash;'; ?></div>
+      <p><?php echo esc_html($ratio_read); ?> One gram of gold currently buys about <?php echo $ratio !== null ? esc_html($ratio) : '&mdash;'; ?>&nbsp;g of silver.</p>
+    </div>
+    <div class="mp-ins__card">
+      <h4>Duty &amp; tax share</h4>
+      <div class="mp-ins__big">~<?php echo (int) $bridge_pct; ?>%</div>
+      <p>Of the &#8377;<?php echo number_format($g24_10); ?> per-10g reference for 24K, roughly &#8377;<?php echo number_format($bridge); ?> is import duty, 3% GST and local premium. Making-charge GST (5%) is charged on top when you buy jewellery.</p>
+    </div>
+    <div class="mp-ins__card">
+      <h4>Last 30 days</h4>
+      <div class="mp-ins__big <?php echo ($mom !== null && $mom < 0) ? 'dn' : 'up'; ?>">
+        <?php echo $mom === null ? '&mdash;' : (($mom >= 0 ? '&#9650; ' : '&#9660; ') . abs($mom) . '%'); ?>
+      </div>
+      <p><?php
+        if ($mom === null)      echo 'Trend data is loading.';
+        elseif ($mom >= 3)      echo 'Gold has run up this month. Averaging in (small amounts over time) avoids timing a local top.';
+        elseif ($mom <= -3)     echo 'Gold has pulled back this month. Dips have historically suited lump-sum buyers &mdash; but past moves do not predict the next one.';
+        else                    echo 'Gold has been broadly flat this month &mdash; a calm window for planned purchases.';
+      ?></p>
+    </div>
+  </div>
+
+  <h3>Making charges move the final bill more than the rate does</h3>
+  <table class="mp-ins__tbl">
+    <thead><tr><th>Making charge</th><th>10g 22K jewellery, incl. GST</th><th>Extra vs 8%</th></tr></thead>
+    <tbody>
+    <?php
+      $g22_g = $g_per_g * 0.916;
+      $base  = $g22_g * 10;
+      $ref   = null;
+      foreach (array(8, 12, 18, 25) as $mk) {
+          $tot = $base * (1 + $mk / 100) * 1.03;
+          if ($ref === null) $ref = $tot;
+          printf(
+              '<tr><td>%d%%</td><td>&#8377;%s</td><td>%s</td></tr>',
+              $mk,
+              number_format($tot),
+              $mk === 8 ? '&mdash;' : ('+&#8377;' . number_format($tot - $ref))
+          );
+      }
+    ?>
+    </tbody>
+  </table>
+  <p class="mp-ins__note">Making charges are negotiable, especially on plain (non-studded) gold &mdash; ask for them itemised. All figures indicative and derived from international prices; they are not a retail quote and not investment advice.</p>
+</section>
+<style>
+.mp-ins{margin:24px 0}
+.mp-ins h2{font-size:20px;margin:0 0 12px}
+.mp-ins h3{font-size:15px;margin:18px 0 8px}
+.mp-ins__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+.mp-ins__card{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-surface,#fff)}
+.mp-ins__card h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-ins__big{font-size:26px;font-weight:800;margin-bottom:4px}
+.mp-ins__big.up{color:#16a34a}.mp-ins__big.dn{color:#dc2626}
+.mp-ins__card p{margin:0;font-size:12.5px;line-height:1.5}
+.mp-ins__tbl{width:100%;border-collapse:collapse;font-size:13px}
+.mp-ins__tbl th,.mp-ins__tbl td{padding:8px 10px;border-bottom:1px solid var(--mp-border,#eef1f4);text-align:left}
+.mp-ins__tbl td:not(:first-child),.mp-ins__tbl th:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
+.mp-ins__note{font-size:11px;color:var(--mp-muted,#64748b);margin-top:10px}
+html[data-theme="dark"] .mp-ins__card{background:#111827;border-color:rgba(255,255,255,.08);color:#f1f5f9}
+html[data-theme="dark"] .mp-ins__tbl th,html[data-theme="dark"] .mp-ins__tbl td{border-color:rgba(255,255,255,.08)}
+</style>
+    <?php
+    return ob_get_clean();
 });
