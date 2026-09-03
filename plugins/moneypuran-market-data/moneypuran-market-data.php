@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.10.2
+ * Version: 1.10.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -3024,9 +3024,15 @@ add_shortcode('mp_stock_screener', function () {
 .mp-scr__sec-chg{font-size:12px;font-weight:700}
 .mp-scr__pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(22,163,74,.12);color:#16a34a}
 .mp-scr__pill.bear{background:rgba(220,38,38,.12);color:#dc2626}
-.mp-scr__tbl{width:100%;border-collapse:collapse;font-size:13.5px}
-.mp-scr__tbl td{padding:10px 14px;border-top:1px solid var(--mp-border,#eef1f4)}
-.mp-scr__tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.mp-scr__tbl{width:100%;border-collapse:collapse;font-size:13.5px;table-layout:fixed}
+.mp-scr__tbl td{padding:10px 12px;border-top:1px solid var(--mp-border,#eef1f4);overflow-wrap:anywhere}
+.mp-scr__tbl td:nth-child(1){width:44%}
+.mp-scr__tbl td:nth-child(2){width:22%}
+.mp-scr__tbl td:nth-child(3){width:16%}
+.mp-scr__tbl td:nth-child(4){width:18%}
+.mp-scr__tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow-wrap:normal}
+.mp-scr__exp td{width:auto !important}
+@media(max-width:560px){.mp-scr__tbl td{padding:9px 7px;font-size:12px}.mp-scr__name small{display:none}}
 .mp-scr__row{cursor:pointer}
 .mp-scr__row:hover{background:var(--mp-bg,#f8fafc)}
 .mp-scr__name{font-weight:600}.mp-scr__name small{display:block;font-weight:400;color:var(--mp-muted,#64748b);font-size:11px}
@@ -3049,7 +3055,8 @@ html[data-theme="dark"] .mp-scr__sector,html[data-theme="dark"] .mp-scr__scenari
   var SECNOTE={};
   <?php foreach (mp_md_screener_universe() as $sec => $def) : ?>SECNOTE[<?php echo wp_json_encode($sec); ?>]=<?php echo wp_json_encode(mp_md_sector_note($sec)); ?>;<?php endforeach; ?>
 
-  function chip(sg){ return '<span class="mp-scr__sig '+sg+'">'+(sg==='Bullish'?'▲ ':sg==='Bearish'?'▼ ':'● ')+sg+'</span>'; }
+  var SHORT={Bullish:'Bull',Bearish:'Bear',Neutral:'Flat'};
+  function chip(sg){ return '<span class="mp-scr__sig '+sg+'" title="'+sg+'">'+(sg==='Bullish'?'▲ ':sg==='Bearish'?'▼ ':'● ')+(SHORT[sg]||sg)+'</span>'; }
 
   function rowHtml(r, sector){
     var up=(r.chgPct||0)>=0;
@@ -3222,7 +3229,8 @@ function mp_md_screener_sector_html($name, $info) {
       <td><span class="mp-scr__name"><?php echo esc_html($r['name']); ?><small>NSE: <?php echo esc_html($r['sym']); ?></small></span></td>
       <td class="num">&#8377;<?php echo number_format($r['price'], 2); ?></td>
       <td class="num mp-scr__chg <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $r['chgPct'] === null ? '&mdash;' : (($up ? '+' : '') . $r['chgPct'] . '%'); ?></td>
-      <td class="num"><span class="mp-scr__sig <?php echo esc_attr($r['signal']); ?>"><?php echo $r['signal'] === 'Bullish' ? '&#9650; ' : ($r['signal'] === 'Bearish' ? '&#9660; ' : '&#9679; '); echo esc_html($r['signal']); ?></span></td>
+      <td class="num"><span class="mp-scr__sig <?php echo esc_attr($r['signal']); ?>" title="<?php echo esc_attr($r['signal']); ?>"><?php
+        echo $r['signal'] === 'Bullish' ? '&#9650; Bull' : ($r['signal'] === 'Bearish' ? '&#9660; Bear' : '&#9679; Flat'); ?></span></td>
     </tr>
   <?php endforeach; ?>
   </tbody></table>
