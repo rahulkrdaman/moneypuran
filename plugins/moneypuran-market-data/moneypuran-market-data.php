@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.7.0
+ * Version: 1.8.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -617,15 +617,19 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
     var ai = $('mpstAiPanel'); if (ai) ai.style.display = 'none';
     var o = observe(s);
     if (title) title.textContent = s.symbol + ' — ' + (s.name || '');
+    var chartId = 'mpstWhyChart_' + sym.replace(/[^A-Za-z0-9]/g, '');
     body.innerHTML =
         '<div style="font-size:14px;line-height:1.6">'
       +   '<h4 style="margin:0 0 4px">What the numbers show</h4><p style="margin:0">'+o.text+'</p>'
       +   '<h4 style="margin:14px 0 4px">A read of the move</h4><p style="margin:0">'+readMove(o, s)+'</p>'
+      +   '<h4 style="margin:14px 0 6px">Price chart</h4>'
+      +   '<div id="'+chartId+'" style="height:360px;width:100%;border:1px solid var(--mpst-border,#e5e7eb);border-radius:10px;overflow:hidden"></div>'
       +   '<h4 style="margin:14px 0 4px">Related coverage</h4><div id="mpstWhyNews">Loading…</div>'
-      +   '<p style="margin:14px 0 0;font-size:12px;opacity:.7">This is an automated summary of publicly available, possibly delayed market data — not investment advice, research or a recommendation to buy or sell. Reasons for a price move are our interpretation of the data, not confirmed facts. Consult a SEBI-registered investment adviser before acting.</p>'
+      +   '<p style="margin:14px 0 0;font-size:12px;opacity:.7">Chart by TradingView. This is an automated summary of publicly available, possibly delayed market data — not investment advice, research or a recommendation to buy or sell. Reasons for a price move are our interpretation of the data, not confirmed facts. Consult a SEBI-registered investment adviser before acting.</p>'
       + '</div>';
     panel.style.display = '';
     panel.scrollIntoView({ block: 'nearest' });
+    if (window.__mpTV) window.__mpTV.make(chartId, 'NSE:' + sym, 'D');
     newsFor(s).then(function(html){ var n = $('mpstWhyNews'); if (n) n.innerHTML = html; });
   };
 
@@ -2084,9 +2088,10 @@ add_shortcode('mp_commodities_page', function () {
 @keyframes mpCommFlashU{0%{background:rgba(22,163,74,.28)}100%{background:transparent}}
 @keyframes mpCommFlashD{0%{background:rgba(220,38,38,.28)}100%{background:transparent}}
 .mp-commod__exp td{background:var(--mp-bg,#f8fafc);padding:14px}
-.mp-commod__exp-plot{width:100%;height:200px}
-.mp-commod__exp-plot svg{width:100%;height:100%;overflow:visible}
-.mp-commod__exp-stat{font-size:12.5px;color:var(--mp-muted,#64748b);margin-bottom:6px}
+.mp-commod__exp-tv{width:100%;height:440px;border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;overflow:hidden;background:var(--mp-surface,#fff)}
+.mp-commod__exp-stat{font-size:11.5px;color:var(--mp-muted,#64748b);margin-top:6px}
+@media(max-width:600px){.mp-commod__exp-tv{height:340px}}
+html[data-theme="dark"] .mp-commod__exp-tv{border-color:rgba(255,255,255,.08);background:#111827}
 .mp-commod__note{font-size:11px;line-height:1.6;color:var(--mp-muted,#64748b);margin-top:12px}
 html[data-theme="dark"] .mp-commod__mover,html[data-theme="dark"] .mp-commod__tbl th{background:#0a0f1e}
 html[data-theme="dark"] .mp-commod__wrap{border-color:rgba(255,255,255,.08)}
@@ -2164,45 +2169,22 @@ html[data-theme="dark"] .mp-commod__w52-dot{background:#f1f5f9;border-color:#111
     });
   }
 
-  function drawChart(container, d){
-    var pts=d.points||[]; if(pts.length<2){ container.innerHTML='<div class="mp-commod__exp-stat">Chart unavailable.</div>'; return; }
-    var w=container.clientWidth||600,h=180,pad=4,padB=14;
-    var ys=pts.map(function(p){return p[1];}),mn=Math.min.apply(null,ys),mx=Math.max.apply(null,ys); if(mn===mx){mn-=1;mx+=1;}
-    var n=pts.length, line='',area='';
-    for(var i=0;i<n;i++){ var x=pad+i/(n-1)*(w-2*pad), y=pad+(1-(pts[i][1]-mn)/(mx-mn))*(h-pad-padB); line+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' '; area+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' '; }
-    area+='L'+(w-pad)+' '+(h-padB)+' L'+pad+' '+(h-padB)+' Z';
-    var up=d.chg>=0,col=up?'#16a34a':'#dc2626';
-    var t0=new Date(pts[0][0]*1000),t1=new Date(pts[n-1][0]*1000);
-    function df(x){return x.toLocaleDateString('en-IN',{month:'short',year:'2-digit'});}
-    var sym=d.inr?'₹':'';
-    container.innerHTML='<div class="mp-commod__exp-stat"><b style="font-size:15px;color:var(--mp-ink,#0f172a)">'+sym+Number(d.last).toLocaleString('en-IN')+'</b> · '
-      +'<span style="color:'+col+';font-weight:600">'+(up?'▲ ':'▼ ')+Math.abs(d.chg)+'% over 6 months</span></div>'
-      +'<div class="mp-commod__exp-plot"><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">'
-      +'<defs><linearGradient id="mpcxg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="'+col+'" stop-opacity="0.2"/><stop offset="1" stop-color="'+col+'" stop-opacity="0"/></linearGradient></defs>'
-      +'<path d="'+area+'" fill="url(#mpcxg)"/><path d="'+line+'" fill="none" stroke="'+col+'" stroke-width="2"/>'
-      +'<text x="'+pad+'" y="'+h+'" font-size="10" fill="#94a3b8">'+df(t0)+'</text>'
-      +'<text x="'+(w-pad)+'" y="'+h+'" font-size="10" fill="#94a3b8" text-anchor="end">'+df(t1)+'</text></svg></div>';
-  }
-
   function expandRow(tr, keepOpen){
-    var key=tr.getAttribute('data-key'), sym=tr.getAttribute('data-sym');
+    var key=tr.getAttribute('data-key'), tv=tr.getAttribute('data-tv');
     var next=tr.nextElementSibling;
     if(next && next.classList.contains('mp-commod__exp')){
       if(!keepOpen){ next.remove(); expandedKey=null; return; }
-      var c=next.querySelector('.mp-commod__exp-c'); if(c && c.getAttribute('data-loaded')) return;
-    } else {
-      var exp=document.createElement('tr');
-      exp.className='mp-commod__exp';
-      exp.innerHTML='<td colspan="6"><div class="mp-commod__exp-c" data-loaded=""><div class="mp-commod__exp-stat">Loading chart…</div></div></td>';
-      tr.parentNode.insertBefore(exp, tr.nextSibling);
-      next=exp;
+      return;
     }
+    var open=body.querySelector('.mp-commod__exp'); if(open) open.remove();
+    var cid='mptvc_row_'+key;
+    var exp=document.createElement('tr');
+    exp.className='mp-commod__exp';
+    exp.innerHTML='<td colspan="6"><div class="mp-commod__exp-tv" id="'+cid+'"></div>'
+      +'<div class="mp-commod__exp-stat">Full candlestick chart · '+tv+'. Data may be delayed.</div></td>';
+    tr.parentNode.insertBefore(exp, tr.nextSibling);
     expandedKey=key;
-    var cont=next.querySelector('.mp-commod__exp-c');
-    fetch(HP+'?symbol='+encodeURIComponent(sym)+'&range=6mo',{credentials:'omit'})
-      .then(function(r){return r.ok?r.json():null;})
-      .then(function(d){ if(d&&d.points){ drawChart(cont,d); cont.setAttribute('data-loaded','1'); } else { cont.innerHTML='<div class="mp-commod__exp-stat">Chart unavailable.</div>'; } })
-      .catch(function(){ cont.innerHTML='<div class="mp-commod__exp-stat">Chart unavailable.</div>'; });
+    if(window.__mpTV) window.__mpTV.make(cid, tv, 'D');
   }
 
   W.querySelector('.mp-commod__tabs').addEventListener('click',function(e){
@@ -2262,7 +2244,7 @@ function mp_md_commod_row_html($r, $spk) {
         $spkSvg = '<svg width="90" height="26" viewBox="0 0 90 26"><path d="' . esc_attr($d) . '" fill="none" stroke="' . $col . '" stroke-width="1.5"/></svg>';
     }
     ?>
-<tr data-key="<?php echo esc_attr($r['key']); ?>" data-group="<?php echo esc_attr($r['group']); ?>" data-sym="<?php echo esc_attr($r['symbol']); ?>">
+<tr data-key="<?php echo esc_attr($r['key']); ?>" data-group="<?php echo esc_attr($r['group']); ?>" data-sym="<?php echo esc_attr($r['symbol']); ?>" data-tv="<?php echo esc_attr(mp_tv_resolve($r['key'])[0]); ?>">
   <td><span class="mp-commod__name"><?php echo esc_html($r['label']); ?><small><?php echo esc_html(str_replace('=F', ' futures', $r['symbol'])); ?></small></span></td>
   <td class="num" data-role="price"><?php echo $fmt($r['price']); ?> <span class="mp-commod__inr" style="font-size:11px"><?php echo esc_html($r['currency'] ?: 'USD'); ?></span></td>
   <td class="num mp-commod__inr"><?php echo $r['inr'] !== null ? '&#8377;' . number_format($r['inr']) . '<span style="font-size:10px"> ' . esc_html($r['inrUnit']) . '</span>' : '—'; ?></td>
@@ -2276,3 +2258,198 @@ function mp_md_commod_row_html($r, $spk) {
 </tr>
     <?php
 }
+
+
+/* ============================================================================
+ * TRADINGVIEW CHARTS (v1.8.0) — [mp_tv_chart]
+ * Full candlestick + volume + indicators + drawing-tools chart via
+ * TradingView's Advanced Chart widget. MCX / NSE / BSE / COMEX / NYMEX / ICE
+ * symbols. Theme-aware, lazy-loaded (tv.js only when a chart nears the
+ * viewport), optional symbol switcher. One helper block per page.
+ * ==========================================================================*/
+
+function mp_tv_symbol_map() {
+    return array(
+        'gold'      => array('MCX:GOLD1!',       'Gold'),
+        'silver'    => array('MCX:SILVER1!',     'Silver'),
+        'crude'     => array('MCX:CRUDEOIL1!',   'Crude Oil'),
+        'wti'       => array('NYMEX:CL1!',       'WTI Crude'),
+        'brent'     => array('TVC:UKOIL',        'Brent'),
+        'natgas'    => array('MCX:NATURALGAS1!', 'Natural Gas'),
+        'gasoline'  => array('NYMEX:RB1!',       'Gasoline'),
+        'heatoil'   => array('NYMEX:HO1!',       'Heating Oil'),
+        'platinum'  => array('NYMEX:PL1!',       'Platinum'),
+        'palladium' => array('NYMEX:PA1!',       'Palladium'),
+        'copper'    => array('MCX:COPPER1!',     'Copper'),
+        'aluminium' => array('MCX:ALUMINIUM1!',  'Aluminium'),
+        'zinc'      => array('MCX:ZINC1!',       'Zinc'),
+        'lead'      => array('MCX:LEAD1!',       'Lead'),
+        'nickel'    => array('MCX:NICKEL1!',     'Nickel'),
+        'corn'      => array('CBOT:ZC1!',        'Corn'),
+        'wheat'     => array('CBOT:ZW1!',        'Wheat'),
+        'soybean'   => array('CBOT:ZS1!',        'Soybeans'),
+        'coffee'    => array('ICEUS:KC1!',       'Coffee'),
+        'sugar'     => array('ICEUS:SB1!',       'Sugar'),
+        'cotton'    => array('ICEUS:CT1!',       'Cotton'),
+        'nifty'     => array('NSE:NIFTY',        'Nifty 50'),
+        'sensex'    => array('BSE:SENSEX',       'Sensex'),
+        'banknifty' => array('NSE:CNXBANK',      'Bank Nifty'),
+        'bitcoin'   => array('BINANCE:BTCUSDT',  'Bitcoin'),
+        'usdinr'    => array('FX_IDC:USDINR',    'USD / INR'),
+    );
+}
+
+/** "gold" -> [MCX:GOLD1!, Gold]; "NSE:RELIANCE" -> passthrough; "reliance" -> NSE:RELIANCE */
+function mp_tv_resolve($s) {
+    $s = trim((string) $s);
+    if ($s === '') return array('NSE:NIFTY', 'Nifty 50');
+    $map = mp_tv_symbol_map();
+    $k = strtolower($s);
+    if (isset($map[$k])) return $map[$k];
+    if (strpos($s, ':') !== false) {
+        $parts = explode(':', $s, 2);
+        return array($s, $parts[1]);
+    }
+    return array('NSE:' . strtoupper($s), strtoupper($s));
+}
+
+function mp_tv_assets_html() {
+    static $done = false;
+    if ($done) return '';
+    $done = true;
+    ob_start(); ?>
+<script>
+(function(){
+  if (window.__mpTV) return;
+  var TV = window.__mpTV = { q: [], loaded: false, loading: false, widgets: [] };
+  TV.theme = function(){
+    var t = document.documentElement.getAttribute('data-theme');
+    if (t === 'dark' || t === 'light') return t;
+    return (window.matchMedia && matchMedia('(prefers-color-scheme:dark)').matches) ? 'dark' : 'light';
+  };
+  TV.load = function(cb){
+    if (TV.loaded && window.TradingView) return cb();
+    TV.q.push(cb);
+    if (TV.loading) return;
+    TV.loading = true;
+    var s = document.createElement('script');
+    s.src = 'https://s3.tradingview.com/tv.js';
+    s.async = true;
+    s.onload = function(){ TV.loaded = true; var q = TV.q.splice(0); q.forEach(function(f){ try{ f(); }catch(e){} }); };
+    s.onerror = function(){ TV.loading = false; };
+    document.head.appendChild(s);
+  };
+  TV.make = function(elId, symbol, interval){
+    var host = document.getElementById(elId);
+    if (!host) return null;
+    var rec = { elId: elId, symbol: symbol, interval: interval || 'D', w: null };
+    rec.build = function(){
+      if (!window.TradingView) return;
+      host.innerHTML = '';
+      rec.w = new TradingView.widget({
+        autosize: true,
+        symbol: rec.symbol,
+        interval: rec.interval,
+        timezone: 'Asia/Kolkata',
+        theme: TV.theme(),
+        style: '1',
+        locale: 'in',
+        enable_publishing: false,
+        withdateranges: true,
+        allow_symbol_change: true,
+        hide_side_toolbar: (window.innerWidth < 760),
+        container_id: elId,
+        support_host: 'https://www.tradingview.com'
+      });
+    };
+    rec.setSymbol = function(sym){ rec.symbol = sym; TV.load(rec.build); };
+    TV.widgets.push(rec);
+    if ('IntersectionObserver' in window){
+      var io = new IntersectionObserver(function(es){
+        es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); TV.load(rec.build); } });
+      }, { rootMargin: '400px' });
+      io.observe(host);
+    } else {
+      TV.load(rec.build);
+    }
+    return rec;
+  };
+  var last = TV.theme();
+  function reTheme(){
+    var now = TV.theme();
+    if (now === last) return;
+    last = now;
+    TV.widgets.forEach(function(r){ if (r.w) TV.load(r.build); });
+  }
+  new MutationObserver(reTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  if (window.matchMedia) { try { matchMedia('(prefers-color-scheme:dark)').addEventListener('change', reTheme); } catch(e){} }
+}());
+</script>
+<style>
+.mp-tvc{margin:22px 0}
+.mp-tvc__bar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.mp-tvc__bar button{border:1px solid var(--mp-border,#cbd5e1);background:transparent;color:inherit;padding:6px 12px;border-radius:20px;font-size:12.5px;font-weight:600;cursor:pointer}
+.mp-tvc__bar button.on{background:var(--mp-brand,#0057ff);border-color:var(--mp-brand,#0057ff);color:#fff}
+.mp-tvc__box{height:clamp(360px,64vh,520px);width:100%;border:1px solid var(--mp-border,#e5e7eb);border-radius:12px;overflow:hidden;background:var(--mp-surface,#fff)}
+.mp-tvc__note{font-size:11px;color:var(--mp-muted,#64748b);margin:8px 0 0}
+@media(max-width:600px){.mp-tvc__box{height:380px}}
+html[data-theme="dark"] .mp-tvc__box{border-color:rgba(255,255,255,.08);background:#111827}
+</style>
+    <?php
+    return ob_get_clean();
+}
+add_action('wp_footer', function () { echo mp_tv_assets_html(); }, 5);
+
+/* --------------------------- [mp_tv_chart] --------------------------- */
+add_shortcode('mp_tv_chart', function ($atts) {
+    $a = shortcode_atts(array(
+        'symbol'   => 'nifty',
+        'symbols'  => '',
+        'interval' => 'D',
+        'height'   => '',
+    ), $atts, 'mp_tv_chart');
+
+    list($sym, ) = mp_tv_resolve($a['symbol']);
+    $switch = array();
+    if ($a['symbols'] !== '') {
+        foreach (explode(',', $a['symbols']) as $s) {
+            if (trim($s) === '') continue;
+            $switch[] = mp_tv_resolve($s);
+        }
+    }
+    $id = 'mptvc_' . wp_generate_password(8, false, false);
+    $h  = $a['height'] !== '' ? (int) preg_replace('/[^0-9]/', '', $a['height']) : 0;
+
+    ob_start(); ?>
+<div class="mp-tvc">
+  <?php if ($switch) : ?>
+  <div class="mp-tvc__bar" data-role="bar">
+    <?php foreach ($switch as $i => $s) : ?>
+    <button type="button" data-s="<?php echo esc_attr($s[0]); ?>" class="<?php echo $i === 0 ? 'on' : ''; ?>"><?php echo esc_html($s[1]); ?></button>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+  <div class="mp-tvc__box" id="<?php echo esc_attr($id); ?>"<?php echo $h ? ' style="height:' . $h . 'px"' : ''; ?>></div>
+  <p class="mp-tvc__note">Interactive chart &amp; data by TradingView. Exchange data may be delayed. Nothing here is investment advice.</p>
+</div>
+<script>
+(function(){
+  var id = <?php echo wp_json_encode($id); ?>;
+  function go(){
+    if (!window.__mpTV) { return setTimeout(go, 120); }
+    var rec = window.__mpTV.make(id, <?php echo wp_json_encode($sym); ?>, <?php echo wp_json_encode($a['interval']); ?>);
+    var box = document.getElementById(id);
+    var bar = box && box.parentNode.querySelector('[data-role=bar]');
+    if (bar && rec) bar.addEventListener('click', function(e){
+      var b = e.target.closest('button[data-s]'); if (!b) return;
+      [].forEach.call(bar.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      rec.setSymbol(b.getAttribute('data-s'));
+    });
+  }
+  go();
+}());
+</script>
+    <?php
+    return mp_tv_assets_html() . ob_get_clean();
+});
