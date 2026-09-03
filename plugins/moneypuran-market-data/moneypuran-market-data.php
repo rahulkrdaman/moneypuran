@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.4.1
+ * Version: 1.4.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1337,8 +1337,9 @@ add_shortcode('mp_gold_rates', function ($atts) {
       if(norm){ sel.value = norm; window.mpRatesSetCity(norm); load(norm); }
     });
   });
-  var saved = window.mpRatesCity();
-  if(saved && saved !== sel.value){ var ok=false; [].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok){ sel.value=saved; load(saved); } }
+  var saved = window.mpRatesCity(), ok=false;
+  if(saved){ [].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok) sel.value=saved; }
+  load(sel.value);   // always fetch so the calculator has a per-gram rate
   calc();
 }());
 </script>
