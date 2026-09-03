@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.12.0
+ * Version: 1.13.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -397,6 +397,22 @@ function mp_md_card_html($title, $rows) {
     foreach ($rows as $r) $h .= mp_md_row_html($r);
     return $h . '</div></div>';
 }
+/* Gold & Silver as a first-class dashboard card (kept at the top of the grid). */
+function mp_md_bullion_card_html($b) {
+    if (empty($b) || empty($b['gold_24k_10g'])) return '';
+    $rows = array(
+        array('Gold 24K &middot; 10g', $b['gold_24k_10g']),
+        array('Gold 22K &middot; 10g', $b['gold_22k_10g']),
+        array('Gold 18K &middot; 10g', $b['gold_18k_10g']),
+    );
+    if (!empty($b['silver_kg'])) $rows[] = array('Silver &middot; 1kg', $b['silver_kg']);
+    $h = '<div class="mp-md-card mp-md-card--bullion"><h3 class="mp-md-card-title">Gold &amp; Silver &middot; INR (indicative)</h3><div class="mp-md-card-body">';
+    foreach ($rows as $r) {
+        $h .= '<div class="mp-md-row"><span class="mp-md-label">' . $r[0] . '</span>'
+            . '<span class="mp-md-price">&#8377;' . mp_md_fmt($r[1], 0) . '</span><span class="mp-md-chg"></span></div>';
+    }
+    return $h . '</div><p class="mp-md-note" style="margin:8px 0 0;font-size:10px">COMEX spot &times; USD/INR &mdash; excludes GST, duty &amp; making charges.</p></div>';
+}
 
 add_shortcode('mp_markets_dashboard', function () {
     $g = mp_md_get_groups();
@@ -413,23 +429,12 @@ add_shortcode('mp_markets_dashboard', function () {
   <div class="mp-md-grid" id="mpMdGrid">
     <?php
     echo mp_md_card_html('World Indices',  $g['world']       ?? array());
+    echo mp_md_bullion_card_html($g['bullion_inr'] ?? array());
     echo mp_md_card_html('Currency Rates', $g['currencies']  ?? array());
     echo mp_md_card_html('Commodities',    $g['commodities'] ?? array());
     echo mp_md_card_html('Sector Indices (India)', $g['sectors'] ?? array());
     ?>
   </div>
-  <?php if (!empty($g['bullion_inr'])) : $b = $g['bullion_inr']; ?>
-  <div class="mp-md-bullion">
-    <h3 class="mp-md-card-title">Gold &amp; Silver &mdash; indicative (INR)</h3>
-    <div class="mp-md-bullion-row">
-      <span><strong>24K</strong> &#8377;<?php echo mp_md_fmt($b['gold_24k_10g'], 0); ?>/10g</span>
-      <span><strong>22K</strong> &#8377;<?php echo mp_md_fmt($b['gold_22k_10g'], 0); ?>/10g</span>
-      <span><strong>18K</strong> &#8377;<?php echo mp_md_fmt($b['gold_18k_10g'], 0); ?>/10g</span>
-      <?php if (!empty($b['silver_kg'])) : ?><span><strong>Silver</strong> &#8377;<?php echo mp_md_fmt($b['silver_kg'], 0); ?>/kg</span><?php endif; ?>
-    </div>
-    <p class="mp-md-note"><?php echo esc_html($b['note']); ?></p>
-  </div>
-  <?php endif; ?>
   <p class="mp-md-disclaimer">Market data is provided for information only and may be delayed. Nothing here is investment advice.</p>
 </section>
 <style>
@@ -439,6 +444,8 @@ add_shortcode('mp_markets_dashboard', function () {
 .mp-md-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px}
 .mp-md-asof{font-size:11px;color:var(--mp-muted,#64748b)}
 .mp-md-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.mp-md-card--bullion .mp-md-price{color:var(--mp-brand,#1d4ed8);font-weight:700}
+@media(min-width:720px){.mp-md-card--bullion{grid-column:span 2}.mp-md-card--bullion .mp-md-card-body{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}}
 .mp-md-card,.mp-md-bullion{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
 .mp-md-card-title{font-size:13px;font-weight:700;margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase;color:var(--mp-muted,#64748b)}
 .mp-md-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--mp-border,#eef1f4);font-size:13px}
@@ -474,13 +481,24 @@ html[data-theme="dark"] .mp-md-row{border-top-color:rgba(255,255,255,.08)}
       +'<span class="mp-md-price">'+Number(r.price).toLocaleString('en-IN',{minimumFractionDigits:dec,maximumFractionDigits:dec})+'</span>'
       +'<span class="mp-md-chg '+cls+'">'+(up?'+':'')+Number(r.chgPct||0).toFixed(2)+'%</span></div>';
   }
+  function bullionCard(b){
+    if(!b || !b.gold_24k_10g) return '';
+    var inr = function(n){ return '₹'+Number(n).toLocaleString('en-IN',{maximumFractionDigits:0}); };
+    var rows = [['Gold 24K · 10g',b.gold_24k_10g],['Gold 22K · 10g',b.gold_22k_10g],['Gold 18K · 10g',b.gold_18k_10g]];
+    if(b.silver_kg) rows.push(['Silver · 1kg',b.silver_kg]);
+    return '<div class="mp-md-card mp-md-card--bullion"><h3 class="mp-md-card-title">Gold &amp; Silver · INR (indicative)</h3><div class="mp-md-card-body">'
+      + rows.map(function(x){ return '<div class="mp-md-row"><span class="mp-md-label">'+x[0]+'</span><span class="mp-md-price">'+inr(x[1])+'</span><span class="mp-md-chg"></span></div>'; }).join('')
+      + '</div></div>';
+  }
   function paint(d){
-    var html = '';
+    var cards = [];
     ['world','currencies','commodities','sectors'].forEach(function(k){
       var rows = d[k]||[]; if(!rows.length) return;
-      html += '<div class="mp-md-card"><h3 class="mp-md-card-title">'+TITLES[k]+'</h3><div class="mp-md-card-body">'+rows.map(row).join('')+'</div></div>';
+      cards.push('<div class="mp-md-card"><h3 class="mp-md-card-title">'+TITLES[k]+'</h3><div class="mp-md-card-body">'+rows.map(row).join('')+'</div></div>');
     });
-    if(html) GRID.innerHTML = html;
+    var bc = bullionCard(d.bullion_inr);
+    if(bc) cards.splice(cards.length ? 1 : 0, 0, bc);
+    if(cards.length) GRID.innerHTML = cards.join('');
     var a = document.getElementById('mpMdAsOf');
     if(a) a.textContent = 'Market data - updated ' + new Date().toLocaleTimeString() + ' - may be delayed';
   }
