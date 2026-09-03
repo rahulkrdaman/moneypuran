@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="712" height="200" viewBox="0 0 712 200">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f7bff"/>
+      <stop offset="1" stop-color="#0038bd"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(8,26)">
+    <rect width="148" height="148" rx="34" fill="url(#g)"/>
+    <circle cx="38" cy="106" r="9.5" fill="#ffffff"/>
+    <path d="M38 106 L65 83 L87 93 L118 51" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M100 51 L118 51 L118 69" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="182" y="131" font-family="'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif" font-size="94" font-weight="700" letter-spacing="-2.5">
+    <tspan fill="#0f172a">Money</tspan><tspan fill="#0057ff">Puran</tspan>
+  </text>
+</svg>
