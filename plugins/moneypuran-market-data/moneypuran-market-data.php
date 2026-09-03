@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.10.0
+ * Version: 1.10.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -2721,7 +2721,7 @@ function mp_md_screener_universe() {
         )),
         'Telecom & Others' => array('', array(
             'BHARTIARTL' => 'Bharti Airtel', 'ASIANPAINT' => 'Asian Paints', 'TRENT' => 'Trent',
-            'DMART' => 'Avenue Supermarts', 'INTERGLOBE' => 'InterGlobe (IndiGo)', 'DABUR' => 'Dabur',
+            'DMART' => 'Avenue Supermarts', 'INDIGO' => 'InterGlobe (IndiGo)', 'DABUR' => 'Dabur',
         )),
     );
 }
@@ -2744,10 +2744,10 @@ function mp_md_sector_note($sector) {
 /** Batch quote via Yahoo v8 spark (one request per ~40 symbols, keyless). */
 function mp_md_yahoo_spark($symbols) {
     $out = array();
-    foreach (array_chunk($symbols, 40) as $chunk) {
+    foreach (array_chunk($symbols, 10) as $chunk) {
         $list = implode(',', array_map('rawurlencode', $chunk));
-        $url  = 'https://query1.finance.yahoo.com/v8/finance/spark?symbols=' . $list . '&range=1d&interval=5m&indicators=close';
-        $res  = wp_remote_get($url, array('timeout' => 9, 'headers' => array(
+        $url  = 'https://query1.finance.yahoo.com/v8/finance/spark?symbols=' . $list . '&range=1d&interval=1d';
+        $res  = wp_remote_get($url, array('timeout' => 7, 'headers' => array(
             'User-Agent' => 'Mozilla/5.0 (compatible; MoneyPuran/1.0; +https://moneypuran.com)',
             'Accept'     => 'application/json',
         )));
