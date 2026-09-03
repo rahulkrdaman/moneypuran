@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.9.2
+ * Version: 1.9.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -633,7 +633,7 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
       + '</div>';
     panel.style.display = '';
     panel.scrollIntoView({ block: 'nearest' });
-    if (window.__mpLWC) window.__mpLWC.scan();
+    if (window.__mpLWC) window.__mpLWC.scan(true);
     newsFor(s).then(function(html){ var n = $('mpstWhyNews'); if (n) n.innerHTML = html; });
   };
 
@@ -2192,7 +2192,7 @@ html[data-theme="dark"] .mp-commod__w52-dot{background:#f1f5f9;border-color:#111
       +'</div><div class="mp-cc__box" style="height:380px"></div></div></td>';
     tr.parentNode.insertBefore(exp, tr.nextSibling);
     expandedKey=key;
-    if(window.__mpLWC) window.__mpLWC.scan();
+    if(window.__mpLWC) window.__mpLWC.scan(true);
   }
 
   W.querySelector('.mp-commod__tabs').addEventListener('click',function(e){
@@ -2569,11 +2569,16 @@ function mp_candle_assets_html() {
       go(); rec.setTf(b.getAttribute('data-t'));
     });
     root.__mpccRec = rec;
+    root.__mpccGo = go;
   };
 
-  L.scan = function(){
+  L.scan = function(force){
     var list = document.querySelectorAll('.mp-cc');
-    for (var i = 0; i < list.length; i++) L.attach(list[i]);
+    for (var i = 0; i < list.length; i++){
+      var el = list[i], fresh = !el.__mpcc;
+      L.attach(el);
+      if (force && fresh && el.__mpccGo) el.__mpccGo();
+    }
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', L.scan);
