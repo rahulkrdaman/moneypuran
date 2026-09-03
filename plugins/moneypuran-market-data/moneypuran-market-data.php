@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.9.1
+ * Version: 1.9.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -617,30 +617,23 @@ html[data-theme="dark"] #mpStockTool .sig-neutral{color:#94a3b8}
     var ai = $('mpstAiPanel'); if (ai) ai.style.display = 'none';
     var o = observe(s);
     if (title) title.textContent = s.symbol + ' — ' + (s.name || '');
-    var chartId = 'mpstWhyChart_' + sym.replace(/[^A-Za-z0-9]/g, '');
     body.innerHTML =
         '<div style="font-size:14px;line-height:1.6">'
       +   '<h4 style="margin:0 0 4px">What the numbers show</h4><p style="margin:0">'+o.text+'</p>'
       +   '<h4 style="margin:14px 0 4px">A read of the move</h4><p style="margin:0">'+readMove(o, s)+'</p>'
       +   '<h4 style="margin:14px 0 6px">Price chart</h4>'
-      +   '<div class="mp-cc__tf" data-role="mpstTf" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'
-      +     ['5m','15m','1h','1D','1W'].map(function(t){return '<button type="button" data-t="'+t+'"'+(t==='1D'?' class="on"':'')+' style="border:1px solid var(--mpst-border,#cbd5e1);background:transparent;color:inherit;padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer">'+t.toUpperCase()+'</button>';}).join('')
+      +   '<div class="mp-cc" data-symbol="'+sym+'" data-tf="1D">'
+      +     '<div class="mp-cc__head"><span class="mp-cc__title" data-role="title">'+s.symbol+'</span><span class="mp-cc__meta" data-role="meta">Loading…</span></div>'
+      +     '<div class="mp-cc__tf" data-role="tf">'
+      +       ['5m','15m','1h','1D','1W'].map(function(t){return '<button type="button" data-t="'+t+'"'+(t==='1D'?' class="on"':'')+'>'+t.toUpperCase()+'</button>';}).join('')
+      +     '</div><div class="mp-cc__box" style="height:340px"></div>'
       +   '</div>'
-      +   '<div id="'+chartId+'" style="height:360px;width:100%;border:1px solid var(--mpst-border,#e5e7eb);border-radius:10px;overflow:hidden"></div>'
       +   '<h4 style="margin:14px 0 4px">Related coverage</h4><div id="mpstWhyNews">Loading…</div>'
       +   '<p style="margin:14px 0 0;font-size:12px;opacity:.7">Candles from exchange data (Yahoo Finance), possibly delayed. This is an automated summary of publicly available market data — not investment advice, research or a recommendation to buy or sell. Reasons for a price move are our interpretation of the data, not confirmed facts. Consult a SEBI-registered investment adviser before acting.</p>'
       + '</div>';
     panel.style.display = '';
     panel.scrollIntoView({ block: 'nearest' });
-    if (window.__mpLWC) {
-      var _rec = window.__mpLWC.make(chartId, (location.origin||'') + '/wp-json/mp/v1/ohlc', sym, '1D');
-      var _tf = document.querySelector('[data-role=mpstTf]');
-      if (_tf) _tf.addEventListener('click', function(e){
-        var b = e.target.closest('button[data-t]'); if (!b) return;
-        [].forEach.call(_tf.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
-        b.classList.add('on'); _rec.setTf(b.getAttribute('data-t'));
-      });
-    }
+    if (window.__mpLWC) window.__mpLWC.scan();
     newsFor(s).then(function(html){ var n = $('mpstWhyNews'); if (n) n.innerHTML = html; });
   };
 
@@ -2188,25 +2181,18 @@ html[data-theme="dark"] .mp-commod__w52-dot{background:#f1f5f9;border-color:#111
       return;
     }
     var open=body.querySelector('.mp-commod__exp'); if(open) open.remove();
-    var cid='mpcc_row_'+key;
+    var nm=tr.querySelector('.mp-commod__name').firstChild.textContent;
     var exp=document.createElement('tr');
     exp.className='mp-commod__exp';
-    exp.innerHTML='<td colspan="6"><div class="mp-cc"><div class="mp-cc__head">'
-      +'<span class="mp-cc__title">'+tr.querySelector('.mp-commod__name').firstChild.textContent+'</span>'
+    exp.innerHTML='<td colspan="6"><div class="mp-cc" data-symbol="'+cc+'" data-tf="1D">'
+      +'<div class="mp-cc__head"><span class="mp-cc__title" data-role="title">'+nm+'</span>'
       +'<span class="mp-cc__meta" data-role="meta">Loading…</span></div>'
       +'<div class="mp-cc__tf" data-role="tf">'
       +['5m','15m','1h','1D','1W'].map(function(t){return '<button type="button" data-t="'+t+'"'+(t==='1D'?' class="on"':'')+'>'+t.toUpperCase()+'</button>';}).join('')
-      +'</div><div class="mp-cc__box" id="'+cid+'" style="height:380px"></div></div></td>';
+      +'</div><div class="mp-cc__box" style="height:380px"></div></div></td>';
     tr.parentNode.insertBefore(exp, tr.nextSibling);
     expandedKey=key;
-    if(window.__mpLWC){
-      var rec=window.__mpLWC.make(cid, (location.origin||'')+'/wp-json/mp/v1/ohlc', cc, '1D');
-      exp.querySelector('[data-role=tf]').addEventListener('click',function(e){
-        var b=e.target.closest('button[data-t]'); if(!b) return;
-        [].forEach.call(exp.querySelectorAll('[data-role=tf] button'),function(x){x.classList.remove('on');});
-        b.classList.add('on'); rec.setTf(b.getAttribute('data-t'));
-      });
-    }
+    if(window.__mpLWC) window.__mpLWC.scan();
   }
 
   W.querySelector('.mp-commod__tabs').addEventListener('click',function(e){
@@ -2435,7 +2421,8 @@ function mp_candle_assets_html() {
 <script>
 (function(){
   if (window.__mpLWC) return;
-  var L = window.__mpLWC = { loaded:false, loading:false, q:[], src:<?php echo wp_json_encode($lib); ?> };
+  var L = window.__mpLWC = { loaded:false, loading:false, q:[], src:<?php echo wp_json_encode($lib); ?>, charts:[] };
+
   L.load = function(cb){
     if (L.loaded && window.LightweightCharts) return cb();
     L.q.push(cb);
@@ -2457,15 +2444,20 @@ function mp_candle_assets_html() {
       ? { bg:'#111827', text:'#94a3b8', grid:'rgba(255,255,255,.06)', border:'rgba(255,255,255,.12)' }
       : { bg:'#ffffff', text:'#64748b', grid:'#eef1f4', border:'#e2e8f0' };
   };
-  L.charts = [];
   function retheme(){ L.charts.forEach(function(c){ if (c.apply) c.apply(); }); }
   new MutationObserver(retheme).observe(document.documentElement, { attributes:true, attributeFilter:['data-theme'] });
   if (window.matchMedia) { try { matchMedia('(prefers-color-scheme:dark)').addEventListener('change', retheme); } catch(e){} }
 
-  L.make = function(elId, endpoint, symbol, tf){
-    var host = document.getElementById(elId);
-    if (!host) return null;
-    var rec = { symbol:symbol, tf:tf||'1D', chart:null, candle:null, vol:null, _go:0 };
+  var SPAN = { '5m':'today', '15m':'5 days', '1h':'1 month', '1D':'1 year', '1W':'5 years' };
+  var INTRA = { '5m':1, '15m':1, '1h':1 };
+
+  L.attach = function(root){
+    if (!root || root.__mpcc) return;
+    root.__mpcc = 1;
+    var box = root.querySelector('.mp-cc__box');
+    if (!box) return;
+    var endpoint = root.getAttribute('data-endpoint') || ((location.origin||'') + '/wp-json/mp/v1/ohlc');
+    var rec = { symbol: root.getAttribute('data-symbol') || 'nifty', tf: root.getAttribute('data-tf') || '1D', chart:null, candle:null, vol:null, _go:0 };
 
     rec.apply = function(){
       if (!rec.chart) return;
@@ -2478,15 +2470,15 @@ function mp_candle_assets_html() {
       });
     };
     rec.build = function(){
-      if (!window.LightweightCharts) return;
-      host.innerHTML = '';
+      if (!window.LightweightCharts || rec.chart) return;
+      box.innerHTML = '';
       var p = L.palette();
-      rec.chart = LightweightCharts.createChart(host, {
+      rec.chart = LightweightCharts.createChart(box, {
         autoSize:true,
         layout:{ background:{ color:p.bg }, textColor:p.text, fontFamily:'inherit' },
         grid:{ vertLines:{ color:p.grid }, horzLines:{ color:p.grid } },
         rightPriceScale:{ borderColor:p.border, scaleMargins:{ top:0.08, bottom:0.28 } },
-        timeScale:{ borderColor:p.border, timeVisible:(rec.tf==='5m'||rec.tf==='15m'||rec.tf==='1h'), secondsVisible:false },
+        timeScale:{ borderColor:p.border, timeVisible:!!INTRA[rec.tf], secondsVisible:false },
         crosshair:{ mode:1 },
         localization:{ locale:'en-IN' }
       });
@@ -2501,12 +2493,15 @@ function mp_candle_assets_html() {
     };
     rec.fetch = function(){
       if (!rec.candle) return;
-      host.style.opacity = '.5';
+      box.style.opacity = '.5';
       fetch(endpoint + '?symbol=' + encodeURIComponent(rec.symbol) + '&tf=' + encodeURIComponent(rec.tf), { credentials:'omit' })
         .then(function(r){ return r.ok ? r.json() : null; })
         .then(function(d){
-          host.style.opacity = '1';
-          if (!d || !d.bars || !d.bars.length) { return; }
+          box.style.opacity = '1';
+          if (!d || !d.bars || !d.bars.length) {
+            var m0 = root.querySelector('[data-role=meta]'); if (m0) m0.textContent = 'Chart data unavailable right now.';
+            return;
+          }
           var c = [], v = [];
           d.bars.forEach(function(b){
             c.push({ time:b[0], open:b[1], high:b[2], low:b[3], close:b[4] });
@@ -2515,7 +2510,7 @@ function mp_candle_assets_html() {
           rec.candle.setData(c);
           rec.vol.setData(v);
           rec.chart.timeScale().fitContent();
-          var meta = host.parentNode.querySelector('[data-role=meta]');
+          var meta = root.querySelector('[data-role=meta]');
           if (meta && c.length) {
             var last = c[c.length-1].close;
             var prev = c.length > 1 ? c[c.length-2].close : c[0].open;
@@ -2524,36 +2519,67 @@ function mp_candle_assets_html() {
             var sym = d.inr ? '₹' : '';
             var dp = d.inr ? 0 : (last < 20 ? 4 : 2);
             var lastTxt = last.toLocaleString('en-IN', { minimumFractionDigits:dp, maximumFractionDigits:dp });
-            var spanLbl = { '5m':'today', '15m':'5 days', '1h':'1 month', '1D':'1 year', '1W':'5 years' }[d.tf] || d.tf;
             meta.innerHTML = '<b>' + sym + lastTxt + '</b> '
               + '<span style="color:' + (chg>=0?'#16a34a':'#dc2626') + ';font-weight:600">'
               + (chg>=0?'▲ ':'▼ ') + Math.abs(chg).toFixed(2) + '%</span> '
-              + '<span style="opacity:.6">· ' + (spanChg>=0?'+':'') + spanChg.toFixed(1) + '% over ' + spanLbl + '</span>';
+              + '<span style="opacity:.6">· ' + (spanChg>=0?'+':'') + spanChg.toFixed(1) + '% over ' + (SPAN[d.tf]||d.tf) + '</span>';
           }
         })
-        .catch(function(){ host.style.opacity = '1'; });
+        .catch(function(){ box.style.opacity = '1'; });
     };
     rec.setSymbol = function(s){ rec.symbol = s; L.load(rec.fetch); };
-    rec.setTf = function(t){ rec.tf = t; if (rec.chart){ rec.chart.applyOptions({ timeScale:{ timeVisible:(t==='5m'||t==='15m'||t==='1h') } }); } L.load(rec.fetch); };
+    rec.setTf = function(t){
+      rec.tf = t;
+      if (rec.chart) rec.chart.applyOptions({ timeScale:{ timeVisible:!!INTRA[t] } });
+      L.load(rec.fetch);
+    };
 
     function near(){
-      var r = host.getBoundingClientRect();
+      var r = box.getBoundingClientRect();
       var vh = window.innerHeight || document.documentElement.clientHeight;
-      return r.width > 0 && r.bottom > -500 && r.top < vh + 500;
+      return r.width > 0 && r.bottom > -600 && r.top < vh + 600;
     }
     function go(){ if (rec.chart || rec._go) return; rec._go = 1; cleanup(); L.load(rec.build); }
     function onScroll(){ if (near()) go(); }
     function cleanup(){ window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); }
     if ('IntersectionObserver' in window){
-      var io = new IntersectionObserver(function(es){ es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); go(); } }); }, { rootMargin:'500px' });
-      io.observe(host);
+      var io = new IntersectionObserver(function(es){ es.forEach(function(e){ if (e.isIntersecting){ io.disconnect(); go(); } }); }, { rootMargin:'600px' });
+      io.observe(box);
     }
     window.addEventListener('scroll', onScroll, { passive:true });
     window.addEventListener('resize', onScroll);
-    setTimeout(function(){ if (near()) go(); }, 250);
-    setTimeout(function(){ if (near()) go(); }, 1200);
-    return rec;
+    setTimeout(function(){ if (near()) go(); }, 200);
+    setTimeout(function(){ if (near()) go(); }, 1000);
+
+    // wire controls
+    var titleEl = root.querySelector('[data-role=title]');
+    var pills = root.querySelector('[data-role=pills]');
+    if (pills) pills.addEventListener('click', function(e){
+      var b = e.target.closest('button[data-s]'); if (!b) return;
+      [].forEach.call(pills.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      if (titleEl) titleEl.textContent = b.textContent;
+      go(); rec.setSymbol(b.getAttribute('data-s'));
+    });
+    var tfWrap = root.querySelector('[data-role=tf]');
+    if (tfWrap) tfWrap.addEventListener('click', function(e){
+      var b = e.target.closest('button[data-t]'); if (!b) return;
+      [].forEach.call(tfWrap.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      go(); rec.setTf(b.getAttribute('data-t'));
+    });
+    root.__mpccRec = rec;
   };
+
+  L.scan = function(){
+    var list = document.querySelectorAll('.mp-cc');
+    for (var i = 0; i < list.length; i++) L.attach(list[i]);
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', L.scan);
+  else L.scan();
+  window.addEventListener('load', L.scan);
+  var n = 0, iv = setInterval(function(){ L.scan(); if (++n > 20) clearInterval(iv); }, 700);
 }());
 </script>
 <style>
@@ -2581,7 +2607,7 @@ function mp_candle_chart_shortcode($atts) {
         'symbol'   => 'nifty',
         'symbols'  => '',
         'tf'       => '1D',
-        'interval' => '',   // back-compat with [mp_tv_chart interval=]
+        'interval' => '',
         'height'   => '',
     ), $atts, 'mp_candle_chart');
 
@@ -2596,11 +2622,10 @@ function mp_candle_chart_shortcode($atts) {
             $pills[] = array(strtolower(trim($s)), $r[1]);
         }
     }
-    $id = 'mpcc_' . wp_generate_password(8, false, false);
-    $h  = $a['height'] !== '' ? (int) preg_replace('/[^0-9]/', '', $a['height']) : 0;
+    $h = $a['height'] !== '' ? (int) preg_replace('/[^0-9]/', '', $a['height']) : 0;
 
     ob_start(); ?>
-<div class="mp-cc" data-symbol="<?php echo esc_attr(strtolower($a['symbol'])); ?>">
+<div class="mp-cc" data-symbol="<?php echo esc_attr(strtolower($a['symbol'])); ?>" data-tf="<?php echo esc_attr($tf); ?>" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/ohlc')); ?>">
   <div class="mp-cc__head">
     <span class="mp-cc__title" data-role="title"><?php echo esc_html($label); ?></span>
     <span class="mp-cc__meta" data-role="meta">Loading&hellip;</span>
@@ -2617,36 +2642,10 @@ function mp_candle_chart_shortcode($atts) {
     <button type="button" data-t="<?php echo esc_attr($t); ?>" class="<?php echo $t === $tf ? 'on' : ''; ?>"><?php echo esc_html(strtoupper($t)); ?></button>
     <?php endforeach; ?>
   </div>
-  <div class="mp-cc__box" id="<?php echo esc_attr($id); ?>"<?php echo $h ? ' style="height:' . $h . 'px"' : ''; ?>></div>
+  <div class="mp-cc__box"<?php echo $h ? ' style="height:' . $h . 'px"' : ''; ?>></div>
   <p class="mp-cc__note">Candles &amp; volume from exchange data (Yahoo Finance), cached and possibly delayed. Bullion is the international price converted to an indicative INR rate. Not investment advice.</p>
 </div>
-<script>
-(function(){
-  var id = <?php echo wp_json_encode($id); ?>;
-  var EP = <?php echo wp_json_encode(esc_url_raw(home_url('/wp-json/mp/v1/ohlc'))); ?>;
-  function boot(){
-    if (!window.__mpLWC) return setTimeout(boot, 120);
-    var rec = window.__mpLWC.make(id, EP, <?php echo wp_json_encode(strtolower($a['symbol'])); ?>, <?php echo wp_json_encode($tf); ?>);
-    var root = document.getElementById(id).closest('.mp-cc');
-    var titleEl = root.querySelector('[data-role=title]');
-    var pills = root.querySelector('[data-role=pills]');
-    if (pills) pills.addEventListener('click', function(e){
-      var b = e.target.closest('button[data-s]'); if (!b) return;
-      [].forEach.call(pills.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
-      b.classList.add('on');
-      if (titleEl) titleEl.textContent = b.textContent;
-      rec.setSymbol(b.getAttribute('data-s'));
-    });
-    root.querySelector('[data-role=tf]').addEventListener('click', function(e){
-      var b = e.target.closest('button[data-t]'); if (!b) return;
-      [].forEach.call(root.querySelectorAll('[data-role=tf] button'), function(x){ x.classList.remove('on'); });
-      b.classList.add('on');
-      rec.setTf(b.getAttribute('data-t'));
-    });
-  }
-  boot();
-}());
-</script>
+<script>(function(){function s(){ if(window.__mpLWC){ window.__mpLWC.scan(); } else { setTimeout(s,150); } } s();}());</script>
     <?php
     return mp_candle_assets_html() . ob_get_clean();
 }
