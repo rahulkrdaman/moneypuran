@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.6.0
+ * Version: 1.7.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1517,9 +1517,26 @@ function mp_md_series($name, $range = '6mo') {
 add_action('rest_api_init', function () {
     register_rest_route('mp/v1', '/history', array(
         'methods' => 'GET', 'permission_callback' => '__return_true',
-        'args' => array('series' => array('default' => 'gold'), 'range' => array('default' => '6mo')),
+        'args' => array('series' => array('default' => 'gold'), 'range' => array('default' => '6mo'), 'symbol' => array('default' => '')),
         'callback' => function (WP_REST_Request $req) {
-            $d = mp_md_series($req->get_param('series'), $req->get_param('range'));
+            $range  = $req->get_param('range');
+            $symbol = (string) $req->get_param('symbol');
+            if ($symbol !== '') {
+                $wl = apply_filters('mp_history_symbol_whitelist', array());
+                if (!isset($wl[$symbol])) return new WP_Error('bad_symbol', 'Symbol not allowed', array('status' => 400));
+                $raw = mp_md_history_raw($symbol, $range);
+                if (empty($raw)) return new WP_Error('nodata', 'No history', array('status' => 502));
+                $first = $raw[0][1];
+                $lastP = end($raw);
+                $last  = $lastP[1];
+                $d = array(
+                    'symbol' => $symbol, 'label' => $wl[$symbol], 'inr' => false, 'range' => $range,
+                    'points' => $raw, 'first' => $first, 'last' => $last,
+                    'chg' => ($first != 0) ? round(($last - $first) / $first * 100, 1) : 0,
+                );
+            } else {
+                $d = mp_md_series($req->get_param('series'), $range);
+            }
             if (!$d) return new WP_Error('nodata', 'No history', array('status' => 502));
             $resp = rest_ensure_response($d);
             $resp->header('Cache-Control', 'public, max-age=600, s-maxage=1800, stale-while-revalidate=3600');
@@ -1786,3 +1803,476 @@ html[data-theme="dark"] .mp-ins__tbl th,html[data-theme="dark"] .mp-ins__tbl td{
     <?php
     return ob_get_clean();
 });
+
+
+/* ============================================================================
+ * COMMODITIES HUB (v1.7.0) — [mp_commodities_page]
+ * Real prices (server-side Yahoo v8, cached) grouped Energy / Precious /
+ * Base metals / Agriculture. Live auto-refresh + flash on change, indicative
+ * INR from the international price, per-row 30-day sparkline, click-to-expand
+ * 6-month chart, 52-week position bar, top-mover banner. No MCX contract
+ * data (no free feed) — that is stated on the page, not faked.
+ * ==========================================================================*/
+
+const MP_MD_COMMOD_KEY   = 'mp_md_commod_v1';
+const MP_MD_COMMOD_LOCK  = 'mp_md_commod_lock_v1';
+const MP_MD_COMMOD_SPK   = 'mp_md_commod_spark_v1';
+const MP_MD_COMMOD_SOFT  = 60;
+
+/** key => [yahoo symbol, label, group, inr-conversion code|null] */
+function mp_md_commod_defs() {
+    return array(
+        'wti'       => array('CL=F',  'Crude Oil (WTI)',   'energy',   'bbl'),
+        'brent'     => array('BZ=F',  'Brent Crude',       'energy',   'bbl'),
+        'natgas'    => array('NG=F',  'Natural Gas',       'energy',   null),
+        'gasoline'  => array('RB=F',  'Gasoline (RBOB)',   'energy',   null),
+        'heatoil'   => array('HO=F',  'Heating Oil',       'energy',   null),
+        'gold'      => array('GC=F',  'Gold',              'precious', 'oz10g'),
+        'silver'    => array('SI=F',  'Silver',            'precious', 'ozkg'),
+        'platinum'  => array('PL=F',  'Platinum',          'precious', 'oz10g'),
+        'palladium' => array('PA=F',  'Palladium',         'precious', 'oz10g'),
+        'copper'    => array('HG=F',  'Copper',            'base',     'lbkg'),
+        'aluminium' => array('ALI=F', 'Aluminium',         'base',     'tonnekg'),
+        'corn'      => array('ZC=F',  'Corn',              'agri',     null),
+        'wheat'     => array('ZW=F',  'Wheat',             'agri',     null),
+        'soybean'   => array('ZS=F',  'Soybeans',          'agri',     null),
+        'coffee'    => array('KC=F',  'Coffee',            'agri',     null),
+        'sugar'     => array('SB=F',  'Sugar',             'agri',     null),
+        'cotton'    => array('CT=F',  'Cotton',            'agri',     null),
+    );
+}
+
+function mp_md_commod_groups_meta() {
+    return array(
+        'energy'   => 'Energy',
+        'precious' => 'Precious metals',
+        'base'     => 'Base metals',
+        'agri'     => 'Agriculture',
+    );
+}
+
+/** International price -> indicative INR. Pure FX conversion, no India import duty. */
+function mp_md_commod_inr($usd, $code, $usdinr) {
+    if (!$usdinr || !$code) return null;
+    switch ($code) {
+        case 'bbl':     return round($usd * $usdinr);                       // $/bbl  -> INR/bbl
+        case 'oz10g':   return round($usd / 31.1035 * $usdinr * 10);        // $/ozt  -> INR/10g
+        case 'ozkg':    return round($usd / 31.1035 * $usdinr * 1000);      // $/ozt  -> INR/kg
+        case 'lbkg':    return round($usd * 2.20462 * $usdinr);             // $/lb   -> INR/kg
+        case 'tonnekg': return round($usd / 1000 * $usdinr, 2);            // $/t    -> INR/kg
+    }
+    return null;
+}
+function mp_md_commod_inr_unit($code) {
+    return array('bbl' => '/bbl', 'oz10g' => '/10g', 'ozkg' => '/kg', 'lbkg' => '/kg', 'tonnekg' => '/kg')[$code] ?? '';
+}
+
+function mp_md_commod_usdinr() {
+    $g = get_transient(MP_MD_GRP_KEY);
+    if (is_array($g)) {
+        foreach (($g['currencies'] ?? array()) as $r) {
+            if ($r['sym'] === 'INR=X' && !empty($r['price'])) return (float) $r['price'];
+        }
+    }
+    $q = mp_md_yahoo_one('INR=X');
+    return $q ? (float) $q['price'] : 88.0;
+}
+
+function mp_md_commod_build() {
+    $deadline = microtime(true) + 16;
+    $usdinr = mp_md_commod_usdinr();
+    $rows = array();
+    foreach (mp_md_commod_defs() as $key => $d) {
+        if (microtime(true) > $deadline) break;
+        list($sym, $label, $group, $code) = $d;
+        $q = mp_md_yahoo_one($sym);
+        if (!$q || !isset($q['price'])) continue;
+        $w52pos = null;
+        if ($q['w52_high'] !== null && $q['w52_low'] !== null && $q['w52_high'] > $q['w52_low']) {
+            $w52pos = max(0, min(100, round(($q['price'] - $q['w52_low']) / ($q['w52_high'] - $q['w52_low']) * 100)));
+        }
+        $rows[$key] = array(
+            'key'    => $key,
+            'label'  => $label,
+            'group'  => $group,
+            'symbol' => $sym,
+            'price'  => $q['price'],
+            'change' => $q['change'],
+            'chgPct' => $q['chgPct'],
+            'currency' => $q['currency'],
+            'inr'    => mp_md_commod_inr($q['price'], $code, $usdinr),
+            'inrUnit'=> mp_md_commod_inr_unit($code),
+            'high'   => $q['high'],
+            'low'    => $q['low'],
+            'w52_high' => $q['w52_high'],
+            'w52_low'  => $q['w52_low'],
+            'w52pos' => $w52pos,
+            'state'  => $q['state'],
+            'asOf'   => $q['asOf'],
+        );
+    }
+    return array('rows' => $rows, 'usdinr' => round($usdinr, 2), '_at' => time(), 'asOf' => gmdate('c'));
+}
+
+function mp_md_get_commod() {
+    $snap = get_transient(MP_MD_COMMOD_KEY);
+    $age  = is_array($snap) && !empty($snap['_at']) ? (time() - $snap['_at']) : PHP_INT_MAX;
+    if (is_array($snap) && $age < MP_MD_COMMOD_SOFT) return $snap;
+
+    if (!get_transient(MP_MD_COMMOD_LOCK)) {
+        set_transient(MP_MD_COMMOD_LOCK, 1, 20);
+        $fresh = mp_md_commod_build();
+        delete_transient(MP_MD_COMMOD_LOCK);
+        if (!empty($fresh['rows'])) {
+            set_transient(MP_MD_COMMOD_KEY, $fresh, MP_MD_HARD_TTL);
+            return $fresh;
+        }
+    }
+    return is_array($snap) ? $snap : array('rows' => array(), 'usdinr' => null, 'asOf' => gmdate('c'));
+}
+
+/** 30-day sparkline closes per commodity, downsampled to <=26 points. Cached ~2h. */
+function mp_md_commod_spark() {
+    $c = get_transient(MP_MD_COMMOD_SPK);
+    if (is_array($c)) return $c;
+    $out = array();
+    $deadline = microtime(true) + 18;
+    foreach (mp_md_commod_defs() as $key => $d) {
+        if (microtime(true) > $deadline) break;
+        $ser = mp_md_history_raw($d[0], '1mo');
+        if (empty($ser)) continue;
+        $vals = array_map(function ($p) { return $p[1]; }, $ser);
+        $n = count($vals);
+        if ($n > 26) {
+            $step = ($n - 1) / 25;
+            $s = array();
+            for ($i = 0; $i < 26; $i++) $s[] = $vals[(int) round($i * $step)];
+            $vals = $s;
+        }
+        $out[$key] = $vals;
+    }
+    if ($out) set_transient(MP_MD_COMMOD_SPK, $out, 2 * HOUR_IN_SECONDS);
+    return $out;
+}
+
+/* crons */
+add_action('mp_md_cron_commod', function () {
+    delete_transient(MP_MD_COMMOD_LOCK);
+    $f = mp_md_commod_build();
+    if (!empty($f['rows'])) set_transient(MP_MD_COMMOD_KEY, $f, MP_MD_HARD_TTL);
+});
+add_action('mp_md_cron_commod_spark', function () {
+    delete_transient(MP_MD_COMMOD_SPK);
+    mp_md_commod_spark();
+});
+add_action('init', function () {
+    if (!wp_next_scheduled('mp_md_cron_commod'))       wp_schedule_event(time() + 55, 'mp_md_2min',  'mp_md_cron_commod');
+    if (!wp_next_scheduled('mp_md_cron_commod_spark')) wp_schedule_event(time() + 90, 'mp_md_10min', 'mp_md_cron_commod_spark');
+});
+add_filter('cron_schedules', function ($s) {
+    if (empty($s['mp_md_10min'])) $s['mp_md_10min'] = array('interval' => 600, 'display' => 'Every 10 minutes');
+    return $s;
+});
+
+/* REST */
+add_action('rest_api_init', function () {
+    register_rest_route('mp/v1', '/commodities', array(
+        'methods' => 'GET', 'permission_callback' => '__return_true',
+        'callback' => function (WP_REST_Request $req) {
+            $d = mp_md_get_commod();
+            $rows = array_values($d['rows']);
+            $g = sanitize_key($req->get_param('group'));
+            if ($g && isset(mp_md_commod_groups_meta()[$g])) {
+                $rows = array_values(array_filter($rows, function ($r) use ($g) { return $r['group'] === $g; }));
+            }
+            $body = array('rows' => $rows, 'usdinr' => $d['usdinr'], 'asOf' => $d['asOf'], 'note' => 'Prices may be delayed. Not investment advice.');
+            if ($req->get_param('spark')) $body['spark'] = mp_md_commod_spark();
+            $resp = rest_ensure_response($body);
+            $resp->header('Cache-Control', 'public, max-age=15, s-maxage=20, stale-while-revalidate=60');
+            return $resp;
+        },
+    ));
+});
+
+/** allow /history to plot an arbitrary whitelisted commodity symbol */
+add_filter('mp_history_symbol_whitelist', function ($list) {
+    foreach (mp_md_commod_defs() as $d) $list[$d[0]] = $d[1];
+    return $list;
+});
+
+/* --------------------------- [mp_commodities_page] --------------------------- */
+add_shortcode('mp_commodities_page', function () {
+    $d      = mp_md_get_commod();
+    $rows   = $d['rows'];
+    $spark  = mp_md_commod_spark();
+    $groups = mp_md_commod_groups_meta();
+
+    // top mover
+    $mover = null;
+    foreach ($rows as $r) {
+        if ($r['chgPct'] === null) continue;
+        if ($mover === null || abs($r['chgPct']) > abs($mover['chgPct'])) $mover = $r;
+    }
+
+    ob_start(); ?>
+<div class="mp-commod" id="mpCommodPage"
+     data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/commodities')); ?>"
+     data-history="<?php echo esc_url(home_url('/wp-json/mp/v1/history')); ?>">
+
+  <?php if ($mover) : $mu = $mover['chgPct'] >= 0; ?>
+  <div class="mp-commod__mover">
+    <span class="mp-commod__mover-tag">Biggest move today</span>
+    <strong><?php echo esc_html($mover['label']); ?></strong>
+    <span class="<?php echo $mu ? 'up' : 'dn'; ?>"><?php echo ($mu ? '▲ ' : '▼ ') . abs($mover['chgPct']); ?>%</span>
+  </div>
+  <?php endif; ?>
+
+  <div class="mp-commod__tabs" role="tablist">
+    <button type="button" class="on" data-g="all">All</button>
+    <?php foreach ($groups as $gk => $gl) : ?>
+    <button type="button" data-g="<?php echo esc_attr($gk); ?>"><?php echo esc_html($gl); ?></button>
+    <?php endforeach; ?>
+    <span class="mp-commod__meta" data-role="meta"></span>
+  </div>
+
+  <div class="mp-commod__wrap">
+    <table class="mp-commod__tbl">
+      <thead><tr>
+        <th>Commodity</th><th class="num">Price</th><th class="num">≈ &#8377;</th>
+        <th class="num">Day</th><th class="w52">52-week range</th><th class="spk">30 days</th>
+      </tr></thead>
+      <tbody data-role="body">
+        <?php foreach ($rows as $r) : mp_md_commod_row_html($r, $spark[$r['key']] ?? array()); endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="mp-commod__note">
+    Live international benchmark prices (COMEX / NYMEX / ICE), server-fetched and cached; they refresh here every few seconds and may be delayed by the exchange.
+    &#8377; values are the international price converted at USD/INR (<span data-role="fx"><?php echo $d['usdinr'] ? esc_html($d['usdinr']) : '—'; ?></span>) — they exclude Indian import duty, GST and MCX basis, so they are not MCX or retail quotes.
+    We don't publish MCX contract prices (Gold Petal, Crude Oil Mini, etc.) because there is no free, redistributable MCX feed. Nothing here is investment advice.
+  </p>
+</div>
+
+<style>
+.mp-commod{margin:18px 0}
+.mp-commod__mover{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--mp-bg,#f8fafc);border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:14px}
+.mp-commod__mover-tag{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mp-muted,#64748b);font-weight:700}
+.mp-commod__mover .up{color:#16a34a;font-weight:700}.mp-commod__mover .dn{color:#dc2626;font-weight:700}
+.mp-commod__tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+.mp-commod__tabs button{border:1px solid var(--mp-border,#cbd5e1);background:transparent;color:inherit;padding:6px 12px;border-radius:20px;font-size:12.5px;font-weight:600;cursor:pointer}
+.mp-commod__tabs button.on{background:var(--mp-brand,#0057ff);border-color:var(--mp-brand,#0057ff);color:#fff}
+.mp-commod__meta{margin-left:auto;font-size:11px;color:var(--mp-muted,#64748b)}
+.mp-commod__wrap{overflow-x:auto;border:1px solid var(--mp-border,#e5e7eb);border-radius:12px}
+.mp-commod__tbl{width:100%;border-collapse:collapse;font-size:13.5px;min-width:640px}
+.mp-commod__tbl th,.mp-commod__tbl td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--mp-border,#eef1f4);white-space:nowrap}
+.mp-commod__tbl th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b);background:var(--mp-bg,#f8fafc)}
+.mp-commod__tbl th.num,.mp-commod__tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.mp-commod__tbl tbody tr{cursor:pointer}
+.mp-commod__tbl tbody tr:hover{background:var(--mp-bg,#f8fafc)}
+.mp-commod__name{font-weight:600}
+.mp-commod__name small{display:block;font-weight:400;color:var(--mp-muted,#64748b);font-size:11px}
+.mp-commod__inr{color:var(--mp-muted,#475569)}
+.mp-commod__chg.up{color:#16a34a;font-weight:600}.mp-commod__chg.dn{color:#dc2626;font-weight:600}
+.mp-commod__w52{display:flex;align-items:center;gap:6px;min-width:150px}
+.mp-commod__w52-track{position:relative;flex:1;height:4px;border-radius:3px;background:linear-gradient(90deg,#dc2626,#e5e7eb,#16a34a)}
+.mp-commod__w52-dot{position:absolute;top:-3px;width:10px;height:10px;border-radius:50%;background:var(--mp-ink,#0f172a);border:2px solid #fff;transform:translateX(-50%)}
+.mp-commod__w52-lbl{font-size:10px;color:var(--mp-muted,#94a3b8)}
+.mp-commod__spk svg{display:block}
+.mp-commod__flash-up{animation:mpCommFlashU .9s ease-out}
+.mp-commod__flash-dn{animation:mpCommFlashD .9s ease-out}
+@keyframes mpCommFlashU{0%{background:rgba(22,163,74,.28)}100%{background:transparent}}
+@keyframes mpCommFlashD{0%{background:rgba(220,38,38,.28)}100%{background:transparent}}
+.mp-commod__exp td{background:var(--mp-bg,#f8fafc);padding:14px}
+.mp-commod__exp-plot{width:100%;height:200px}
+.mp-commod__exp-plot svg{width:100%;height:100%;overflow:visible}
+.mp-commod__exp-stat{font-size:12.5px;color:var(--mp-muted,#64748b);margin-bottom:6px}
+.mp-commod__note{font-size:11px;line-height:1.6;color:var(--mp-muted,#64748b);margin-top:12px}
+html[data-theme="dark"] .mp-commod__mover,html[data-theme="dark"] .mp-commod__tbl th{background:#0a0f1e}
+html[data-theme="dark"] .mp-commod__wrap{border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-commod__tbl th,html[data-theme="dark"] .mp-commod__tbl td{border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-commod__tbl tbody tr:hover,html[data-theme="dark"] .mp-commod__exp td{background:#111827}
+html[data-theme="dark"] .mp-commod__w52-dot{background:#f1f5f9;border-color:#111827}
+</style>
+
+<script>
+(function(){
+  var W=document.getElementById('mpCommodPage'); if(!W) return;
+  var EP=W.getAttribute('data-endpoint'), HP=W.getAttribute('data-history');
+  var body=W.querySelector('[data-role=body]'), metaEl=W.querySelector('[data-role=meta]'), fxEl=W.querySelector('[data-role=fx]');
+  var group='all', LAST={}, painted=false, expandedKey=null;
+
+  function fmtP(v){ return v>=1000? v.toLocaleString('en-IN',{maximumFractionDigits:0}) : (v>=10? v.toFixed(2) : v.toFixed(3)); }
+  function fmtI(v){ return v==null? '' : '₹'+Math.round(v).toLocaleString('en-IN'); }
+
+  function spark(vals,w,h){
+    if(!vals||vals.length<2) return '';
+    var mn=Math.min.apply(null,vals), mx=Math.max.apply(null,vals); if(mn===mx){mn-=1;mx+=1;}
+    var n=vals.length, d='';
+    for(var i=0;i<n;i++){ var x=i/(n-1)*w, y=h-(vals[i]-mn)/(mx-mn)*h; d+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' '; }
+    var up=vals[n-1]>=vals[0];
+    return '<svg class="mp-commod__spk-svg" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><path d="'+d+'" fill="none" stroke="'+(up?'#16a34a':'#dc2626')+'" stroke-width="1.5"/></svg>';
+  }
+
+  function rowHtml(r, spk){
+    var up=(r.chgPct||0)>=0;
+    var pos=r.w52pos;
+    var w52 = (pos==null)? '<span class="mp-commod__w52-lbl">—</span>' :
+      '<div class="mp-commod__w52"><span class="mp-commod__w52-lbl">'+fmtP(r.w52_low)+'</span>'
+      +'<span class="mp-commod__w52-track"><span class="mp-commod__w52-dot" style="left:'+pos+'%"></span></span>'
+      +'<span class="mp-commod__w52-lbl">'+fmtP(r.w52_high)+'</span></div>';
+    return '<tr data-key="'+r.key+'" data-group="'+r.group+'" data-sym="'+r.symbol+'">'
+      +'<td><span class="mp-commod__name">'+r.label+'<small>'+r.symbol.replace('=F',' futures')+'</small></span></td>'
+      +'<td class="num" data-role="price">'+fmtP(r.price)+' <span class="mp-commod__inr" style="font-size:11px">'+(r.currency||'USD')+'</span></td>'
+      +'<td class="num mp-commod__inr">'+(r.inr!=null? fmtI(r.inr)+'<span style="font-size:10px"> '+(r.inrUnit||'')+'</span>' : '—')+'</td>'
+      +'<td class="num mp-commod__chg '+(up?'up':'dn')+'">'+(up?'+':'')+(r.chgPct==null?'—':r.chgPct+'%')+'</td>'
+      +'<td>'+w52+'</td>'
+      +'<td class="spk">'+spark(spk,90,26)+'</td></tr>';
+  }
+
+  function render(rows, sparkMap){
+    var html='';
+    rows.forEach(function(r){ html+=rowHtml(r, sparkMap&&sparkMap[r.key]); });
+    body.innerHTML=html;
+    applyFilter();
+    if(expandedKey){ var tr=body.querySelector('tr[data-key="'+expandedKey+'"]'); if(tr) expandRow(tr,true); }
+  }
+
+  function paint(rows){
+    rows.forEach(function(r){
+      var tr=body.querySelector('tr[data-key="'+r.key+'"]'); if(!tr) return;
+      var cell=tr.querySelector('[data-role=price]');
+      var prev=LAST[r.key];
+      if(painted && prev!=null && prev!==r.price){
+        tr.classList.remove('mp-commod__flash-up','mp-commod__flash-dn');
+        void tr.offsetWidth;
+        tr.classList.add(r.price>prev?'mp-commod__flash-up':'mp-commod__flash-dn');
+      }
+      LAST[r.key]=r.price;
+      cell.innerHTML=fmtP(r.price)+' <span class="mp-commod__inr" style="font-size:11px">'+(r.currency||'USD')+'</span>';
+      var chg=tr.querySelector('.mp-commod__chg');
+      var up=(r.chgPct||0)>=0;
+      chg.className='num mp-commod__chg '+(up?'up':'dn');
+      chg.textContent=(up?'+':'')+(r.chgPct==null?'—':r.chgPct+'%');
+    });
+    painted=true;
+  }
+
+  function applyFilter(){
+    [].forEach.call(body.querySelectorAll('tr[data-group]'),function(tr){
+      tr.style.display=(group==='all'||tr.getAttribute('data-group')===group)?'':'none';
+    });
+  }
+
+  function drawChart(container, d){
+    var pts=d.points||[]; if(pts.length<2){ container.innerHTML='<div class="mp-commod__exp-stat">Chart unavailable.</div>'; return; }
+    var w=container.clientWidth||600,h=180,pad=4,padB=14;
+    var ys=pts.map(function(p){return p[1];}),mn=Math.min.apply(null,ys),mx=Math.max.apply(null,ys); if(mn===mx){mn-=1;mx+=1;}
+    var n=pts.length, line='',area='';
+    for(var i=0;i<n;i++){ var x=pad+i/(n-1)*(w-2*pad), y=pad+(1-(pts[i][1]-mn)/(mx-mn))*(h-pad-padB); line+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' '; area+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' '; }
+    area+='L'+(w-pad)+' '+(h-padB)+' L'+pad+' '+(h-padB)+' Z';
+    var up=d.chg>=0,col=up?'#16a34a':'#dc2626';
+    var t0=new Date(pts[0][0]*1000),t1=new Date(pts[n-1][0]*1000);
+    function df(x){return x.toLocaleDateString('en-IN',{month:'short',year:'2-digit'});}
+    var sym=d.inr?'₹':'';
+    container.innerHTML='<div class="mp-commod__exp-stat"><b style="font-size:15px;color:var(--mp-ink,#0f172a)">'+sym+Number(d.last).toLocaleString('en-IN')+'</b> · '
+      +'<span style="color:'+col+';font-weight:600">'+(up?'▲ ':'▼ ')+Math.abs(d.chg)+'% over 6 months</span></div>'
+      +'<div class="mp-commod__exp-plot"><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">'
+      +'<defs><linearGradient id="mpcxg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="'+col+'" stop-opacity="0.2"/><stop offset="1" stop-color="'+col+'" stop-opacity="0"/></linearGradient></defs>'
+      +'<path d="'+area+'" fill="url(#mpcxg)"/><path d="'+line+'" fill="none" stroke="'+col+'" stroke-width="2"/>'
+      +'<text x="'+pad+'" y="'+h+'" font-size="10" fill="#94a3b8">'+df(t0)+'</text>'
+      +'<text x="'+(w-pad)+'" y="'+h+'" font-size="10" fill="#94a3b8" text-anchor="end">'+df(t1)+'</text></svg></div>';
+  }
+
+  function expandRow(tr, keepOpen){
+    var key=tr.getAttribute('data-key'), sym=tr.getAttribute('data-sym');
+    var next=tr.nextElementSibling;
+    if(next && next.classList.contains('mp-commod__exp')){
+      if(!keepOpen){ next.remove(); expandedKey=null; return; }
+      var c=next.querySelector('.mp-commod__exp-c'); if(c && c.getAttribute('data-loaded')) return;
+    } else {
+      var exp=document.createElement('tr');
+      exp.className='mp-commod__exp';
+      exp.innerHTML='<td colspan="6"><div class="mp-commod__exp-c" data-loaded=""><div class="mp-commod__exp-stat">Loading chart…</div></div></td>';
+      tr.parentNode.insertBefore(exp, tr.nextSibling);
+      next=exp;
+    }
+    expandedKey=key;
+    var cont=next.querySelector('.mp-commod__exp-c');
+    fetch(HP+'?symbol='+encodeURIComponent(sym)+'&range=6mo',{credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){ if(d&&d.points){ drawChart(cont,d); cont.setAttribute('data-loaded','1'); } else { cont.innerHTML='<div class="mp-commod__exp-stat">Chart unavailable.</div>'; } })
+      .catch(function(){ cont.innerHTML='<div class="mp-commod__exp-stat">Chart unavailable.</div>'; });
+  }
+
+  W.querySelector('.mp-commod__tabs').addEventListener('click',function(e){
+    var b=e.target.closest('button[data-g]'); if(!b) return;
+    W.querySelectorAll('.mp-commod__tabs button').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on'); group=b.getAttribute('data-g'); applyFilter();
+  });
+  body.addEventListener('click',function(e){
+    var tr=e.target.closest('tr[data-key]'); if(!tr) return;
+    expandRow(tr,false);
+  });
+
+  function load(){
+    fetch(EP+'?spark=1',{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      if(!d||!d.rows) return;
+      if(fxEl && d.usdinr) fxEl.textContent=d.usdinr;
+      if(metaEl) metaEl.textContent='updated '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+      if(!painted && !body.querySelector('tr[data-key]')) render(d.rows, d.spark);
+      else if(!body.querySelector('tr[data-key]')) render(d.rows, d.spark);
+      paint(d.rows);
+    }).catch(function(){});
+  }
+  // server-rendered rows already present; seed LAST then start polling
+  [].forEach.call(body.querySelectorAll('tr[data-key]'),function(tr){
+    var k=tr.getAttribute('data-key'); var t=tr.querySelector('[data-role=price]');
+    if(t){ var m=t.textContent.replace(/[^0-9.]/g,''); if(m) LAST[k]=parseFloat(m); }
+  });
+  painted=true;
+  load();
+  setInterval(load, 20000);
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden) load(); });
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
+
+function mp_md_commod_row_html($r, $spk) {
+    $up  = ($r['chgPct'] ?? 0) >= 0;
+    $pos = $r['w52pos'];
+    $fmt = function ($v) {
+        if ($v === null) return '—';
+        if ($v >= 1000) return number_format($v, 0);
+        if ($v >= 10)   return number_format($v, 2);
+        return number_format($v, 3);
+    };
+    $spkSvg = '';
+    if (is_array($spk) && count($spk) > 1) {
+        $mn = min($spk); $mx = max($spk); if ($mn == $mx) { $mn -= 1; $mx += 1; }
+        $n = count($spk); $d = '';
+        foreach ($spk as $i => $val) {
+            $x = $i / ($n - 1) * 90;
+            $y = 26 - ($val - $mn) / ($mx - $mn) * 26;
+            $d .= ($i ? 'L' : 'M') . round($x, 1) . ' ' . round($y, 1) . ' ';
+        }
+        $col = end($spk) >= $spk[0] ? '#16a34a' : '#dc2626';
+        $spkSvg = '<svg width="90" height="26" viewBox="0 0 90 26"><path d="' . esc_attr($d) . '" fill="none" stroke="' . $col . '" stroke-width="1.5"/></svg>';
+    }
+    ?>
+<tr data-key="<?php echo esc_attr($r['key']); ?>" data-group="<?php echo esc_attr($r['group']); ?>" data-sym="<?php echo esc_attr($r['symbol']); ?>">
+  <td><span class="mp-commod__name"><?php echo esc_html($r['label']); ?><small><?php echo esc_html(str_replace('=F', ' futures', $r['symbol'])); ?></small></span></td>
+  <td class="num" data-role="price"><?php echo $fmt($r['price']); ?> <span class="mp-commod__inr" style="font-size:11px"><?php echo esc_html($r['currency'] ?: 'USD'); ?></span></td>
+  <td class="num mp-commod__inr"><?php echo $r['inr'] !== null ? '&#8377;' . number_format($r['inr']) . '<span style="font-size:10px"> ' . esc_html($r['inrUnit']) . '</span>' : '—'; ?></td>
+  <td class="num mp-commod__chg <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $r['chgPct'] === null ? '—' : (($up ? '+' : '') . $r['chgPct'] . '%'); ?></td>
+  <td><?php if ($pos === null) : ?><span class="mp-commod__w52-lbl">—</span><?php else : ?>
+    <div class="mp-commod__w52"><span class="mp-commod__w52-lbl"><?php echo $fmt($r['w52_low']); ?></span>
+      <span class="mp-commod__w52-track"><span class="mp-commod__w52-dot" style="left:<?php echo (int) $pos; ?>%"></span></span>
+      <span class="mp-commod__w52-lbl"><?php echo $fmt($r['w52_high']); ?></span></div>
+  <?php endif; ?></td>
+  <td class="spk"><?php echo $spkSvg; ?></td>
+</tr>
+    <?php
+}
