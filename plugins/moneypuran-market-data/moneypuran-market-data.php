@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.4.3
+ * Version: 1.4.4
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1208,22 +1208,13 @@ function mp_rates_print_assets() {
 html[data-theme="dark"] .mp-rate-card,html[data-theme="dark"] .mp-rates__calc{background:#111827;border-color:rgba(255,255,255,.08);color:#f1f5f9}
 html[data-theme="dark"] .mp-rates__row input,html[data-theme="dark"] .mp-rates__row select,html[data-theme="dark"] .mp-rates__bar select{background:#0a0f1e;border-color:rgba(255,255,255,.12);color:#f1f5f9}
 </style>
-<script>
-window.mpRatesGeo = window.mpRatesGeo || function(cb){
-  if(!navigator.geolocation){ cb(null); return; }
-  navigator.geolocation.getCurrentPosition(function(p){
-    fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+p.coords.latitude+'&longitude='+p.coords.longitude+'&localityLanguage=en')
-      .then(function(r){return r.json();})
-      .then(function(d){ cb(d.city || d.locality || d.principalSubdivision || null); })
-      .catch(function(){ cb(null); });
-  }, function(){ cb(null); }, {timeout:8000, maximumAge:600000});
-};
-window.mpRatesCity = window.mpRatesCity || function(){
-  try { return localStorage.getItem('mp_city') || ''; } catch(e){ return ''; }
-};
-window.mpRatesSetCity = window.mpRatesSetCity || function(c){ try{ localStorage.setItem('mp_city', c); }catch(e){} };
-</script>
     <?php
+}
+
+/* Geo/city helpers - emitted inline by each rate shortcode (before its IIFE). */
+function mp_rates_helpers_html() {
+    static $done = false; if ($done) return ''; $done = true;
+    return '<script>window.mpRatesCity=window.mpRatesCity||function(){try{return localStorage.getItem("mp_city")||"";}catch(e){return "";}};window.mpRatesSetCity=window.mpRatesSetCity||function(c){try{localStorage.setItem("mp_city",c);}catch(e){}};window.mpRatesGeo=window.mpRatesGeo||function(cb){if(!navigator.geolocation){cb(null);return;}navigator.geolocation.getCurrentPosition(function(p){fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+p.coords.latitude+"&longitude="+p.coords.longitude+"&localityLanguage=en").then(function(r){return r.json();}).then(function(d){cb(d.city||d.locality||d.principalSubdivision||null);}).catch(function(){cb(null);});},function(){cb(null);},{timeout:8000,maximumAge:600000});};</script>';
 }
 
 /* --------------------------- [mp_gold_rates] --------------------------- */
@@ -1350,7 +1341,7 @@ add_shortcode('mp_gold_rates', function ($atts) {
 }());
 </script>
     <?php
-    return ob_get_clean();
+    return mp_rates_helpers_html() . ob_get_clean();
 });
 
 /* --------------------------- [mp_fuel_prices] --------------------------- */
@@ -1412,5 +1403,5 @@ add_shortcode('mp_fuel_prices', function ($atts) {
 }());
 </script>
     <?php
-    return ob_get_clean();
+    return mp_rates_helpers_html() . ob_get_clean();
 });
