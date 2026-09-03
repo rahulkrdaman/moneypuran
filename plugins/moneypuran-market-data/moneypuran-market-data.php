@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.9.0
+ * Version: 1.9.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -2517,13 +2517,18 @@ function mp_candle_assets_html() {
           rec.chart.timeScale().fitContent();
           var meta = host.parentNode.querySelector('[data-role=meta]');
           if (meta && c.length) {
-            var last = c[c.length-1].close, first = c[0].open;
-            var chg = first ? ((last-first)/first*100) : 0;
+            var last = c[c.length-1].close;
+            var prev = c.length > 1 ? c[c.length-2].close : c[0].open;
+            var chg = prev ? ((last-prev)/prev*100) : 0;
+            var spanChg = c[0].open ? ((last-c[0].open)/c[0].open*100) : 0;
             var sym = d.inr ? '₹' : '';
-            meta.innerHTML = '<b>' + sym + last.toLocaleString('en-IN') + '</b> '
+            var dp = d.inr ? 0 : (last < 20 ? 4 : 2);
+            var lastTxt = last.toLocaleString('en-IN', { minimumFractionDigits:dp, maximumFractionDigits:dp });
+            var spanLbl = { '5m':'today', '15m':'5 days', '1h':'1 month', '1D':'1 year', '1W':'5 years' }[d.tf] || d.tf;
+            meta.innerHTML = '<b>' + sym + lastTxt + '</b> '
               + '<span style="color:' + (chg>=0?'#16a34a':'#dc2626') + ';font-weight:600">'
               + (chg>=0?'▲ ':'▼ ') + Math.abs(chg).toFixed(2) + '%</span> '
-              + '<span style="opacity:.6">' + d.tf + '</span>';
+              + '<span style="opacity:.6">· ' + (spanChg>=0?'+':'') + spanChg.toFixed(1) + '% over ' + spanLbl + '</span>';
           }
         })
         .catch(function(){ host.style.opacity = '1'; });
