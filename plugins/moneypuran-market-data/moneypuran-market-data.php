@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.10.1
+ * Version: 1.10.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -256,6 +256,16 @@ add_action('mp_md_cron_groups', function () {
         foreach (array('gold', 'silver', 'crude') as $s) {
             mp_md_series($s, '6mo');
             if ($s === 'gold') mp_md_series($s, '1mo');
+        }
+    }
+    // Warm the stock screener so its page never triggers a cold multi-request build.
+    if (function_exists('mp_md_screener_build')) {
+        $sc = get_transient(MP_SCR_KEY);
+        $age = is_array($sc) && !empty($sc['_at']) ? (time() - $sc['_at']) : PHP_INT_MAX;
+        if ($age > 150) {
+            delete_transient(MP_SCR_LOCK);
+            $f = mp_md_screener_build();
+            if (!empty($f['sectors'])) set_transient(MP_SCR_KEY, $f, MP_MD_HARD_TTL);
         }
     }
 });
@@ -2741,18 +2751,29 @@ function mp_md_sector_note($sector) {
     return isset($n[$sector]) ? $n[$sector] : '';
 }
 
-/** Batch quote via Yahoo v8 spark (one request per ~40 symbols, keyless). */
+/** Batch quote via Yahoo v8 spark. Small chunks, alternating hosts, gentle
+ *  pacing + one retry so Yahoo's per-IP rate limiting doesn't drop batches. */
 function mp_md_yahoo_spark($symbols) {
     $out = array();
-    foreach (array_chunk($symbols, 10) as $chunk) {
+    $chunks = array_chunk($symbols, 8);
+    foreach ($chunks as $ci => $chunk) {
         $list = implode(',', array_map('rawurlencode', $chunk));
-        $url  = 'https://query1.finance.yahoo.com/v8/finance/spark?symbols=' . $list . '&range=1d&interval=1d';
-        $res  = wp_remote_get($url, array('timeout' => 7, 'headers' => array(
-            'User-Agent' => 'Mozilla/5.0 (compatible; MoneyPuran/1.0; +https://moneypuran.com)',
-            'Accept'     => 'application/json',
-        )));
-        if (is_wp_error($res) || wp_remote_retrieve_response_code($res) !== 200) continue;
-        $j = json_decode(wp_remote_retrieve_body($res), true);
+        $host = ($ci % 2) ? 'query2' : 'query1';
+        $url  = 'https://' . $host . '.finance.yahoo.com/v8/finance/spark?symbols=' . $list . '&range=1d&interval=1d';
+        $j = null;
+        for ($try = 0; $try < 2; $try++) {
+            $res = wp_remote_get($url, array('timeout' => 6, 'headers' => array(
+                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+                'Accept'     => 'application/json',
+            )));
+            if (!is_wp_error($res) && wp_remote_retrieve_response_code($res) === 200) {
+                $j = json_decode(wp_remote_retrieve_body($res), true);
+                if (is_array($j) && $j) break;
+            }
+            $j = null;
+            usleep(900000);
+        }
+        if ($ci < count($chunks) - 1) usleep(350000);
         if (!is_array($j)) continue;
         // Current shape: { "<SYM>": { symbol, close:[...], chartPreviousClose, previousClose, ... }, ... }
         $rows = isset($j['spark']['result']) ? $j['spark']['result'] : $j;
