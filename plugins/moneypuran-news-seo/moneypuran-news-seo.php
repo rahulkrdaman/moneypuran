@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.1.4
+ * Version: 1.2.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -22,11 +22,55 @@ const MP_INDEXNOW_KEY = '45d502c0fe78c9b0cd484adca03ee5b4';
 const MP_GOOGLE_SITE_VERIFICATION = '-YYgIBomvWMtymxAjdNAfSeSipeIOMBaK5TZtgaSmGs';
 const MP_BING_SITE_VERIFICATION   = '';
 
+// Google Analytics 4 measurement ID. Default here, overridable via the
+// mp_ga4_id option (Settings > Reading), the MP_GA4_ID constant, or the filter.
+const MP_GA4_ID = 'G-1H1D1D7V12';
+
 add_action('wp_head', function () {
     $g = apply_filters('mp_google_site_verification', MP_GOOGLE_SITE_VERIFICATION);
     $b = apply_filters('mp_bing_site_verification', MP_BING_SITE_VERIFICATION);
     if ($g) echo '<meta name="google-site-verification" content="' . esc_attr($g) . '">' . "\n";
     if ($b) echo '<meta name="msvalidate.01" content="' . esc_attr($b) . '">' . "\n";
+}, 1);
+
+/* ----------------------------------------------------------------------------
+ * Google Analytics 4 (gtag.js). Runs on the public front end only. Honours the
+ * Consent Mode v2 defaults set at wp_head priority 0 (analytics_storage stays
+ * 'denied' until a CMP grants it, so GA collects in cookieless/consent mode
+ * meanwhile). Fires at priority 1 so gtag()/dataLayer already exist.
+ * -------------------------------------------------------------------------- */
+function mp_ga4_id() {
+    $id = defined('MP_GA4_ID') ? (string) MP_GA4_ID : '';
+    $opt = (string) get_option('mp_ga4_id', '');
+    if ($opt !== '') $id = $opt;
+    $id = strtoupper(trim((string) apply_filters('mp_ga4_id', $id)));
+    return preg_match('/^G-[A-Z0-9]{4,}$/', $id) ? $id : '';
+}
+
+add_action('admin_init', function () {
+    register_setting('reading', 'mp_ga4_id', array('type' => 'string', 'sanitize_callback' => 'sanitize_text_field'));
+    add_settings_field('mp_ga4_id', 'Google Analytics 4 ID', function () {
+        printf(
+            '<input type="text" name="mp_ga4_id" value="%s" class="regular-text" placeholder="G-XXXXXXXXXX" />'
+            . '<p class="description">GA4 Measurement ID (Admin &rarr; Data streams &rarr; Web). '
+            . 'Blank falls back to the built-in default. Respects Consent Mode v2 (cookieless until a CMP grants). '
+            . 'Filter internal/staff traffic inside GA4 &rarr; Admin &rarr; Data filters.</p>',
+            esc_attr(get_option('mp_ga4_id', ''))
+        );
+    }, 'reading');
+});
+
+add_action('wp_head', function () {
+    if (is_admin() || is_feed() || is_embed() || is_preview()) return;
+    $id = mp_ga4_id();
+    if ($id === '') return;
+    $j = esc_js($id);
+    echo "<script async src=\"https://www.googletagmanager.com/gtag/js?id=" . rawurlencode($id) . "\"></script>\n";
+    echo "<script>\n"
+        . "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}\n"
+        . "gtag('js',new Date());\n"
+        . "gtag('config','" . $j . "');\n"
+        . "</script>\n";
 }, 1);
 
 // Public profiles for the Organization `sameAs` (Google "About this source").
