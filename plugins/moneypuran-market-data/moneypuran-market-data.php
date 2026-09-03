@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.4.0
+ * Version: 1.4.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1169,8 +1169,15 @@ add_action('rest_api_init', function () {
 });
 
 /* --------------------------- Shared front-end assets --------------------------- */
+/* Schedule the CSS/JS for the footer - never echo inline (a shortcode may be run
+   by SEO plugins outside an output buffer, which would corrupt a REST response). */
 function mp_rates_assets() {
-    static $done = false; if ($done) return; $done = true;
+    static $hooked = false;
+    if ($hooked) return;
+    $hooked = true;
+    add_action('wp_footer', 'mp_rates_print_assets', 30);
+}
+function mp_rates_print_assets() {
     ?>
 <style id="mp-rates-css">
 .mp-rates{margin:20px 0;color:var(--mp-ink,#0f172a)}
