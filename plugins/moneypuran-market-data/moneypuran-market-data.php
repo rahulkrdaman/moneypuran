@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.4.4
+ * Version: 1.5.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1214,7 +1214,7 @@ html[data-theme="dark"] .mp-rates__row input,html[data-theme="dark"] .mp-rates__
 /* Geo/city helpers - emitted inline by each rate shortcode (before its IIFE). */
 function mp_rates_helpers_html() {
     static $done = false; if ($done) return ''; $done = true;
-    return '<script>window.mpRatesCity=window.mpRatesCity||function(){try{return localStorage.getItem("mp_city")||"";}catch(e){return "";}};window.mpRatesSetCity=window.mpRatesSetCity||function(c){try{localStorage.setItem("mp_city",c);}catch(e){}};window.mpRatesGeo=window.mpRatesGeo||function(cb){if(!navigator.geolocation){cb(null);return;}navigator.geolocation.getCurrentPosition(function(p){fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+p.coords.latitude+"&longitude="+p.coords.longitude+"&localityLanguage=en").then(function(r){return r.json();}).then(function(d){cb(d.city||d.locality||d.principalSubdivision||null);}).catch(function(){cb(null);});},function(){cb(null);},{timeout:8000,maximumAge:600000});};</script>';
+    return '<script>window.mpRatesCity=window.mpRatesCity||function(){try{return localStorage.getItem("mp_city")||"";}catch(e){return "";}};window.mpRatesSetCity=window.mpRatesSetCity||function(c){try{localStorage.setItem("mp_city",c);}catch(e){}};window.mpRatesAutoCity=window.mpRatesAutoCity||function(cb){try{if(localStorage.getItem("mp_city")){cb(null);return;}}catch(e){}fetch("https://ipapi.co/json/").then(function(r){return r.json();}).then(function(d){cb(d&&d.city?d.city:null);}).catch(function(){cb(null);});};window.mpRatesGeo=window.mpRatesGeo||function(cb){if(!navigator.geolocation){cb(null);return;}navigator.geolocation.getCurrentPosition(function(p){fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?latitude="+p.coords.latitude+"&longitude="+p.coords.longitude+"&localityLanguage=en").then(function(r){return r.json();}).then(function(d){cb(d.city||d.locality||d.principalSubdivision||null);}).catch(function(){cb(null);});},function(){cb(null);},{timeout:8000,maximumAge:600000});};</script>';
 }
 
 /* --------------------------- [mp_gold_rates] --------------------------- */
@@ -1227,7 +1227,6 @@ add_shortcode('mp_gold_rates', function ($atts) {
     ob_start(); ?>
 <div class="mp-rates" id="mpGoldRates" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/rates?type=gold')); ?>">
   <div class="mp-rates__bar">
-    <strong>Gold &amp; Silver Rate in <span class="mp-rates__cityname"><?php echo esc_html($city); ?></span></strong>
     <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
     <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
     <span class="mp-rates__asof">Updated <span data-role="asof"><?php echo $g ? esc_html(date('j M Y', strtotime($g['asOf']))) : '—'; ?></span></span>
@@ -1298,9 +1297,15 @@ add_shortcode('mp_gold_rates', function ($atts) {
     var eff = perG()*(1+mk/100)*(incl?1.03:1);
     W.querySelector('[data-role=amt-out]').value = (amt && eff) ? (amt/eff).toFixed(2)+' g' : '—';
   }
+  function setCityLabel(c){
+    var s = W.querySelector('.mp-rates__cityname'); if(s) s.textContent = c;
+    var h1 = document.querySelector('.mp-primary h1, .entry-content h1, article h1, main h1') || document.querySelector('h1');
+    if (h1) h1.textContent = 'Gold Rate Today in ' + c;
+    try { document.title = 'Gold Rate Today in ' + c + ' | MoneyPuran'; } catch(e){}
+  }
   function paint(d){
     G = d.gold; if(!G) return;
-    W.querySelector('.mp-rates__cityname').textContent = d.city;
+    setCityLabel(d.city);
     W.querySelector('[data-role=asof]').textContent = new Date(G.asOf).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
     var C = W.querySelector('[data-role=cards]'), h = '';
     [['24k','24K (999)'],['22k','22K (916)'],['18k','18K (750)']].forEach(function(x){
@@ -1322,22 +1327,25 @@ add_shortcode('mp_gold_rates', function ($atts) {
     b.classList.add('on'); calc();
   });
   ['wt','mk','gst','amt'].forEach(function(k){ W.querySelector('[data-role='+k+']').addEventListener('input', calc); });
-  sel.addEventListener('change', function(){ window.mpRatesSetCity(sel.value); load(sel.value); });
+  function matchCity(c){
+    if(!c) return null;
+    var lc = String(c).toLowerCase(), hit = null;
+    [].forEach.call(sel.options,function(o){ if(o.value.toLowerCase()===lc) hit=o.value; });
+    if(!hit) [].forEach.call(sel.options,function(o){ var ol=o.value.toLowerCase(); if(lc.indexOf(ol)>-1||ol.indexOf(lc)>-1) hit=o.value; });
+    return hit;
+  }
+  function pick(city){ if(!city) return; sel.value=city; setCityLabel(city); window.mpRatesSetCity(city); load(city); }
+  sel.addEventListener('change', function(){ setCityLabel(sel.value); window.mpRatesSetCity(sel.value); load(sel.value); });
   W.querySelector('[data-role=geo]').addEventListener('click', function(){
     var btn = this; btn.textContent = '📍 Locating…';
-    window.mpRatesGeo(function(c){
-      btn.textContent = '📍 Use my location';
-      if(!c) return;
-      var norm = null, opts = [].slice.call(sel.options);
-      opts.forEach(function(o){ if(o.value.toLowerCase() === String(c).toLowerCase()) norm = o.value; });
-      if(!norm) opts.forEach(function(o){ if(String(c).toLowerCase().indexOf(o.value.toLowerCase())>-1 || o.value.toLowerCase().indexOf(String(c).toLowerCase())>-1) norm = o.value; });
-      if(norm){ sel.value = norm; window.mpRatesSetCity(norm); load(norm); }
-    });
+    window.mpRatesGeo(function(c){ btn.textContent = '📍 Use my location'; pick(matchCity(c)); });
   });
   var saved = window.mpRatesCity(), ok=false;
   if(saved){ [].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok) sel.value=saved; }
-  load(sel.value);   // always fetch so the calculator has a per-gram rate
+  setCityLabel(sel.value);
+  load(sel.value);
   calc();
+  if(!ok){ window.mpRatesAutoCity(function(c){ var m=matchCity(c); if(m && m!==sel.value) pick(m); }); }
 }());
 </script>
     <?php
@@ -1354,7 +1362,6 @@ add_shortcode('mp_fuel_prices', function ($atts) {
     ob_start(); ?>
 <div class="mp-rates" id="mpFuelPrices" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/rates?type=fuel')); ?>">
   <div class="mp-rates__bar">
-    <strong>Petrol &amp; Diesel Price in <span class="mp-rates__cityname"><?php echo esc_html($city); ?></span></strong>
     <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
     <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
     <span class="mp-rates__asof">As of <span data-role="asof"><?php echo esc_html(date('j M Y', strtotime($f['updated']))); ?></span></span>
@@ -1377,29 +1384,40 @@ add_shortcode('mp_fuel_prices', function ($atts) {
 (function(){
   var W = document.getElementById('mpFuelPrices'); if(!W) return;
   var sel = W.querySelector('.mp-rates__city');
+  function setCityLabel(c){
+    var s = W.querySelector('.mp-rates__cityname'); if(s) s.textContent = c;
+    var h1 = document.querySelector('.mp-primary h1, .entry-content h1, article h1, main h1') || document.querySelector('h1');
+    if (h1) h1.textContent = 'Petrol & Diesel Price Today in ' + c;
+    try { document.title = 'Petrol & Diesel Price Today in ' + c + ' | MoneyPuran'; } catch(e){}
+  }
+  function matchCity(c){
+    if(!c) return null;
+    var lc=String(c).toLowerCase(), hit=null;
+    [].forEach.call(sel.options,function(o){ if(o.value.toLowerCase()===lc) hit=o.value; });
+    if(!hit) [].forEach.call(sel.options,function(o){ var ol=o.value.toLowerCase(); if(lc.indexOf(ol)>-1||ol.indexOf(lc)>-1) hit=o.value; });
+    return hit;
+  }
+  function pick(city){ if(!city) return; sel.value=city; setCityLabel(city); window.mpRatesSetCity(city); load(city); }
   function load(city){
     fetch(W.getAttribute('data-endpoint')+'&city='+encodeURIComponent(city), {credentials:'omit'})
       .then(function(r){return r.ok?r.json():null;}).then(function(d){
         if(!d||!d.fuel) return;
-        W.querySelector('.mp-rates__cityname').textContent = d.city;
+        setCityLabel(d.city);
         W.querySelector('[data-role=petrol]').textContent = '₹'+Number(d.fuel.petrol).toFixed(2);
         W.querySelector('[data-role=diesel]').textContent = '₹'+Number(d.fuel.diesel).toFixed(2);
         W.querySelector('[data-role=asof]').textContent = new Date(d.fuel.updated).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
       }).catch(function(){});
   }
-  sel.addEventListener('change', function(){ window.mpRatesSetCity(sel.value); load(sel.value); });
+  sel.addEventListener('change', function(){ setCityLabel(sel.value); window.mpRatesSetCity(sel.value); load(sel.value); });
   W.querySelector('[data-role=geo]').addEventListener('click', function(){
     var btn=this; btn.textContent='📍 Locating…';
-    window.mpRatesGeo(function(c){
-      btn.textContent='📍 Use my location'; if(!c) return;
-      var norm=null; [].forEach.call(sel.options,function(o){
-        if(o.value.toLowerCase()===String(c).toLowerCase() || String(c).toLowerCase().indexOf(o.value.toLowerCase())>-1) norm=o.value;
-      });
-      if(norm){ sel.value=norm; window.mpRatesSetCity(norm); load(norm); }
-    });
+    window.mpRatesGeo(function(c){ btn.textContent='📍 Use my location'; pick(matchCity(c)); });
   });
-  var saved = window.mpRatesCity();
-  if(saved){ var ok=false;[].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok && saved!==sel.value){ sel.value=saved; load(saved); } }
+  var saved = window.mpRatesCity(), ok=false;
+  if(saved){ [].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok) sel.value=saved; }
+  setCityLabel(sel.value);
+  if(ok && saved!==W.querySelector('.mp-rates__cityname').textContent) load(saved);
+  if(!ok){ window.mpRatesAutoCity(function(c){ var m=matchCity(c); if(m && m!==sel.value) pick(m); }); }
 }());
 </script>
     <?php
