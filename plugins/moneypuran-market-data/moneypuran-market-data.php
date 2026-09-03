@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.13.0
+ * Version: 1.14.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1071,6 +1071,193 @@ function mp_md_render_ticker() {
 }
 add_action('mp_news_ticker', 'mp_md_render_ticker');
 add_shortcode('mp_news_ticker', function () { ob_start(); mp_md_render_ticker(); return ob_get_clean(); });
+
+/* ============================================================================
+ * [mp_ticker_block] - a two-row strip placed below the header (front page):
+ *   row 1  "Latest"   - newest published posts, scrolling
+ *   row 2  live quotes - key indices + top NSE movers, badge follows the
+ *                        market session (NSE Live / US Live / MCX / Closed),
+ *                        auto-refreshes every 25s.
+ * ==========================================================================*/
+
+function mp_md_tb_session_label($s) {
+    $m = array('india' => 'NSE Live', 'us' => 'US Live', 'commodities' => 'MCX Live', 'closed' => 'Markets Closed');
+    return isset($m[$s]) ? $m[$s] : 'Markets';
+}
+
+function mp_md_tb_quotes() {
+    $idx  = mp_md_get_indices();
+    $rows = (is_array($idx) && !empty($idx['indices'])) ? array_values($idx['indices']) : array();
+    $nm = array(
+        '^BSESN' => 'SENSEX', '^NSEI' => 'NIFTY 50', '^NSEBANK' => 'BANK NIFTY',
+        'INR=X' => 'USD/INR', 'GC=F' => 'GOLD', 'CL=F' => 'CRUDE OIL', 'BTC-USD' => 'BITCOIN',
+    );
+    $inr = array('^BSESN' => 1, '^NSEI' => 1, '^NSEBANK' => 1, 'INR=X' => 1);
+    $out = array();
+    foreach ($rows as $r) {
+        if (!isset($r['price']) || !isset($r['sym'])) continue;
+        $cur = isset($inr[$r['sym']]) ? '&#8377;' : (($r['sym'] === 'GC=F' || $r['sym'] === 'CL=F') ? '$' : '');
+        $out[] = array('t' => isset($nm[$r['sym']]) ? $nm[$r['sym']] : $r['sym'], 'p' => $r['price'], 'c' => $r['chgPct'], 'cur' => $cur);
+    }
+    foreach (array_slice(mp_md_sorted_stocks('trending'), 0, 10) as $s) {
+        if (!isset($s['price'])) continue;
+        $sym = isset($s['symbol']) ? $s['symbol'] : (isset($s['sym']) ? $s['sym'] : '');
+        if ($sym === '') continue;
+        $out[] = array(
+            't'   => $sym, 'p' => $s['price'], 'c' => isset($s['change_pct']) ? $s['change_pct'] : (isset($s['chgPct']) ? $s['chgPct'] : null),
+            'cur' => '&#8377;',
+            'u'   => function_exists('mp_md_stock_slug') ? home_url('/stocks/' . mp_md_stock_slug($sym) . '/') : '',
+        );
+    }
+    return $out;
+}
+
+function mp_md_tb_quote_html($it) {
+    $c   = is_numeric(isset($it['c']) ? $it['c'] : null) ? (float) $it['c'] : null;
+    $dir = $c === null ? 'flat' : ($c > 0 ? 'up' : ($c < 0 ? 'dn' : 'flat'));
+    $arr = $c === null ? '' : ($c > 0 ? '&#9650;' : ($c < 0 ? '&#9660;' : ''));
+    $p   = is_numeric(isset($it['p']) ? $it['p'] : null) ? number_format((float) $it['p'], 2) : '--';
+    $pct = $c === null ? '' : sprintf('%+.2f%%', $c);
+    $in  = '<b>' . esc_html($it['t']) . '</b> ' . (isset($it['cur']) ? $it['cur'] : '') . $p
+         . ' <i class="' . $dir . '">' . $arr . ' ' . $pct . '</i>';
+    $sep = '<span class="mp-tb__sep">&#9679;</span>';
+    return !empty($it['u'])
+        ? '<a class="mp-tb__q" href="' . esc_url($it['u']) . '">' . $in . '</a>' . $sep
+        : '<span class="mp-tb__q">' . $in . '</span>' . $sep;
+}
+
+add_shortcode('mp_ticker_block', function () {
+    if (is_admin() || is_feed() || is_embed()) return '';
+
+    $posts = get_posts(array('numberposts' => 14, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC'));
+    if (!$posts) return '';
+    $news = '';
+    foreach ($posts as $p) {
+        $news .= '<a class="mp-tb__q" href="' . esc_url(get_permalink($p)) . '">' . esc_html(get_the_title($p))
+               . '</a><span class="mp-tb__sep">&#9679;</span>';
+    }
+
+    $sessions = mp_md_sessions();
+    $active   = $sessions[0];
+    $closed   = ($active === 'closed');
+    $qhtml    = '';
+    foreach (mp_md_tb_quotes() as $it) $qhtml .= mp_md_tb_quote_html($it);
+    if ($qhtml === '') $qhtml = '<span class="mp-tb__q">Live quotes loading&hellip;</span>';
+
+    ob_start(); ?>
+<div class="mp-tb" aria-label="Latest news and live markets">
+  <div class="mp-tb__row">
+    <span class="mp-tb__badge mp-tb__badge--news">Latest</span>
+    <div class="mp-tb__vp"><div class="mp-tb__track">
+      <span class="mp-tb__half"><?php echo $news; ?></span>
+      <span class="mp-tb__half" aria-hidden="true"><?php echo $news; ?></span>
+    </div></div>
+  </div>
+  <div class="mp-tb__row mp-tb__row--q<?php echo $closed ? ' is-closed' : ''; ?>" id="mpTbQ"
+       data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/markets?filter=trending')); ?>">
+    <span class="mp-tb__badge mp-tb__badge--live"><span class="mp-tb__dot"></span><span id="mpTbLabel"><?php echo esc_html(mp_md_tb_session_label($active)); ?></span></span>
+    <div class="mp-tb__vp"><div class="mp-tb__track" id="mpTbTrack">
+      <span class="mp-tb__half" id="mpTbHalf"><?php echo $qhtml; ?></span>
+      <span class="mp-tb__half" aria-hidden="true"><?php echo $qhtml; ?></span>
+    </div></div>
+  </div>
+</div>
+<style id="mp-tb-css">
+.mp-tb{background:#0b1220;border-bottom:1px solid rgba(255,255,255,.07);font-size:12.5px;line-height:1}
+.mp-tb__row{display:flex;align-items:stretch;height:32px;overflow:hidden;position:relative}
+.mp-tb__row + .mp-tb__row{border-top:1px solid rgba(255,255,255,.06)}
+.mp-tb__badge{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 12px;font-weight:700;font-size:10.5px;
+  letter-spacing:.06em;text-transform:uppercase;color:#fff;white-space:nowrap}
+.mp-tb__badge--news{background:#0057ff}
+.mp-tb__badge--live{background:#16a34a}
+.mp-tb__row--q.is-closed .mp-tb__badge--live{background:#475569}
+.mp-tb__dot{width:7px;height:7px;border-radius:50%;background:#fff;animation:mpTbP 1.5s ease-out infinite}
+.mp-tb__row--q.is-closed .mp-tb__dot{animation:none;background:#cbd5e1}
+.mp-tb__vp{flex:1 1 auto;overflow:hidden;position:relative;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 20px,#000 calc(100% - 20px),transparent);
+          mask-image:linear-gradient(90deg,transparent,#000 20px,#000 calc(100% - 20px),transparent)}
+.mp-tb__track{display:inline-flex;align-items:center;height:100%;white-space:nowrap;will-change:transform;
+  animation:mpTbS var(--mp-tb-dur,60s) linear infinite}
+.mp-tb__vp:hover .mp-tb__track{animation-play-state:paused}
+.mp-tb__half{display:inline-flex;align-items:center;padding-left:14px}
+.mp-tb__q{display:inline-flex;align-items:center;gap:5px;color:#d7dee7;text-decoration:none;padding:0 5px}
+.mp-tb__q:hover{color:#7fb0ff}
+.mp-tb__q b{color:#f1f5f9;font-weight:600}
+.mp-tb__q i{font-style:normal;color:#9aa7b4}
+.mp-tb__q i.up{color:#22c55e}.mp-tb__q i.dn{color:#f87171}
+.mp-tb__sep{opacity:.25;padding:0 4px;color:#fff}
+@keyframes mpTbS{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@keyframes mpTbP{0%{box-shadow:0 0 0 0 rgba(255,255,255,.6)}70%{box-shadow:0 0 0 6px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+@media(prefers-reduced-motion:reduce){.mp-tb__track{animation:none}.mp-tb__vp{overflow-x:auto}.mp-tb__half:last-child{display:none}}
+@media(max-width:600px){.mp-tb__row{height:30px}.mp-tb__badge{padding:0 8px;font-size:9.5px}}
+</style>
+<script>
+(function(){
+  var W=document.querySelector('.mp-tb'); if(!W) return;
+  var SPEED=64;
+  function dur(){
+    W.querySelectorAll('.mp-tb__track').forEach(function(tr){
+      var h=tr.querySelector('.mp-tb__half'); if(!h) return;
+      var w=h.getBoundingClientRect().width||h.scrollWidth||1000;
+      if(w>40) tr.style.setProperty('--mp-tb-dur',Math.max(20,Math.round(w/SPEED))+'s');
+    });
+  }
+  dur(); if(window.requestAnimationFrame) requestAnimationFrame(dur); setTimeout(dur,400);
+  window.addEventListener('resize',function(){clearTimeout(W.__rz);W.__rz=setTimeout(dur,200);});
+
+  var Q=document.getElementById('mpTbQ'), TRACK=document.getElementById('mpTbTrack'), LABEL=document.getElementById('mpTbLabel');
+  var LAB={india:'NSE Live',us:'US Live',commodities:'MCX Live',closed:'Markets Closed'};
+  function sess(){
+    var d=new Date();
+    function p(tz){var o={};new Intl.DateTimeFormat('en-US',{timeZone:tz,hour12:false,weekday:'short',hour:'2-digit',minute:'2-digit'}).formatToParts(d).forEach(function(x){o[x.type]=x.value;});
+      return {wd:{Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6}[o.weekday],m:(parseInt(o.hour,10)%24)*60+parseInt(o.minute,10)};}
+    var i=p('Asia/Kolkata'),e=p('America/New_York'),s=[];
+    if(e.wd>=1&&e.wd<=5&&e.m>=570&&e.m<960)s.push('us');
+    if(i.wd>=1&&i.wd<=5&&i.m>=555&&i.m<930)s.push('india');
+    if(i.wd>=1&&i.wd<=5&&i.m>=540&&i.m<1410)s.push('commodities');
+    return s[0]||'closed';
+  }
+  function num(n){return Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
+  var NM={'^BSESN':'SENSEX','^NSEI':'NIFTY 50','^NSEBANK':'BANK NIFTY','INR=X':'USD/INR','GC=F':'GOLD','CL=F':'CRUDE OIL','BTC-USD':'BITCOIN'};
+  var INR={'^BSESN':1,'^NSEI':1,'^NSEBANK':1,'INR=X':1};
+  function slug(s){return String(s).toLowerCase().replace(/&/g,'-and-').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
+  function qh(items){
+    return items.map(function(it){
+      var c=(it.c==null||isNaN(it.c))?null:Number(it.c);
+      var dir=c==null?'flat':(c>0?'up':(c<0?'dn':'flat'));
+      var arr=c==null?'':(c>0?'▲':(c<0?'▼':''));
+      var pct=c==null?'':(c>0?'+':'')+c.toFixed(2)+'%';
+      var s='<b>'+it.t+'</b> '+(it.cur||'')+num(it.p)+' <i class="'+dir+'">'+arr+' '+pct+'</i>';
+      return it.u?'<a class="mp-tb__q" href="'+it.u+'">'+s+'</a><span class="mp-tb__sep">●</span>'
+                 :'<span class="mp-tb__q">'+s+'</span><span class="mp-tb__sep">●</span>';
+    }).join('');
+  }
+  function relabel(){ var s=sess(); if(Q) Q.classList.toggle('is-closed',s==='closed'); if(LABEL) LABEL.textContent=LAB[s]||LAB.closed; }
+  function refresh(){
+    if(!Q||!TRACK) return;
+    fetch(Q.getAttribute('data-endpoint'),{headers:{Accept:'application/json'},credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){
+        if(!d) return;
+        var items=[];
+        (d.indices||[]).forEach(function(r){ if(r.price==null)return;
+          items.push({t:NM[r.sym]||r.sym,p:r.price,c:r.chgPct,cur:INR[r.sym]?'₹':((r.sym==='GC=F'||r.sym==='CL=F')?'$':'')}); });
+        (d.stocks||[]).slice(0,10).forEach(function(s){ if(s.price==null)return;
+          items.push({t:s.symbol||s.sym,p:s.price,c:(s.change_pct!=null?s.change_pct:s.chgPct),cur:'₹',u:'/stocks/'+slug(s.symbol||s.sym)+'/'}); });
+        if(!items.length) return;
+        var h=qh(items);
+        TRACK.innerHTML='<span class="mp-tb__half">'+h+'</span><span class="mp-tb__half" aria-hidden="true">'+h+'</span>';
+        dur();
+      }).catch(function(){});
+  }
+  relabel(); setInterval(relabel,60000);
+  setTimeout(refresh,1200); setInterval(refresh,25000);
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden){ dur(); relabel(); refresh(); }});
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
 
 /* ============================================================================
  * CITY RATES  (v1.4.0)  -  Gold / Silver / Fuel by city
