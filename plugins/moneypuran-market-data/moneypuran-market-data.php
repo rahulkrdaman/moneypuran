@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.15.0
+ * Version: 1.16.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1129,6 +1129,107 @@ add_action('mp_md_daily_touch', function () {
 if (!wp_next_scheduled('mp_md_daily_touch')) {
     wp_schedule_event(time() + 300, 'daily', 'mp_md_daily_touch');
 }
+
+/* ============================================================================
+ * [mp_hero_slider count="4"] - full-width carousel of the newest posts, one
+ * slide visible at a time, auto-advancing. Server-rendered (slide 1 shows at
+ * rest), no library. Honours prefers-reduced-motion.
+ * ==========================================================================*/
+add_shortcode('mp_hero_slider', function ($atts) {
+    $a = shortcode_atts(array('count' => 4), $atts);
+    $n = max(2, min(8, (int) $a['count']));
+    $posts = get_posts(array('numberposts' => $n, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC', 'ignore_sticky_posts' => true));
+    if (count($posts) < 2) return '';
+    $total = count($posts);
+
+    ob_start(); ?>
+<section class="mp-hs" id="mpHs" aria-roledescription="carousel" aria-label="Latest stories">
+  <div class="mp-hs__viewport"><div class="mp-hs__track" id="mpHsTrack">
+    <?php foreach ($posts as $i => $p) :
+      $c   = get_the_category($p->ID); $c = $c ? $c[0] : null;
+      $img = get_the_post_thumbnail_url($p->ID, 'large');
+      if (!$img) $img = get_the_post_thumbnail_url($p->ID, 'full');
+      $ago = human_time_diff(get_post_time('U', true, $p), current_time('timestamp', true));
+    ?>
+    <article class="mp-hs__slide<?php echo $i === 0 ? ' is-active' : ''; ?>" role="group" aria-roledescription="slide"
+             aria-label="<?php echo esc_attr(($i + 1) . ' of ' . $total); ?>"<?php echo $i === 0 ? '' : ' aria-hidden="true"'; ?>>
+      <a class="mp-hs__link" href="<?php echo esc_url(get_permalink($p)); ?>">
+        <?php if ($img) : ?><span class="mp-hs__img" style="background-image:url('<?php echo esc_url($img); ?>')"></span><?php endif; ?>
+        <span class="mp-hs__shade"></span>
+        <span class="mp-hs__body">
+          <?php if ($c) : ?><span class="mp-hs__cat"><?php echo esc_html($c->name); ?></span><?php endif; ?>
+          <span class="mp-hs__h"><?php echo esc_html(get_the_title($p)); ?></span>
+          <span class="mp-hs__meta"><?php echo esc_html($ago); ?> ago</span>
+        </span>
+      </a>
+    </article>
+    <?php endforeach; ?>
+  </div></div>
+  <button class="mp-hs__arrow mp-hs__prev" type="button" aria-label="Previous story">&#8249;</button>
+  <button class="mp-hs__arrow mp-hs__next" type="button" aria-label="Next story">&#8250;</button>
+  <div class="mp-hs__dots">
+    <?php for ($i = 0; $i < $total; $i++) : ?>
+    <button class="mp-hs__dot<?php echo $i === 0 ? ' is-active' : ''; ?>" type="button" aria-label="<?php echo esc_attr('Go to story ' . ($i + 1)); ?>"<?php echo $i === 0 ? ' aria-current="true"' : ''; ?>></button>
+    <?php endfor; ?>
+  </div>
+</section>
+<style id="mp-hs-css">
+.mp-hs{position:relative;margin:14px 0 26px;border-radius:14px;overflow:hidden;background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08))}
+.mp-hs__viewport{overflow:hidden}
+.mp-hs__track{display:flex;transition:transform .55s cubic-bezier(.4,0,.2,1);will-change:transform}
+.mp-hs__slide{flex:0 0 100%;position:relative;min-height:clamp(240px,40vw,400px)}
+.mp-hs__link{display:block;position:absolute;inset:0;text-decoration:none;color:#fff}
+.mp-hs__img{position:absolute;inset:0;background-size:cover;background-position:center;transform:scale(1.02)}
+.mp-hs__shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,10,20,.15) 0%,rgba(6,10,20,.25) 45%,rgba(6,10,20,.88) 100%)}
+.mp-hs__body{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:8px;padding:clamp(18px,3vw,34px);padding-right:clamp(60px,10vw,96px)}
+.mp-hs__cat{align-self:flex-start;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:var(--mp-brand,#0057ff);color:#fff;padding:4px 9px;border-radius:5px}
+.mp-hs__h{font-size:clamp(19px,2.6vw,30px);font-weight:800;line-height:1.22;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 2px 12px rgba(0,0,0,.45)}
+.mp-hs__meta{font-size:12px;color:rgba(255,255,255,.8)}
+.mp-hs__link:hover .mp-hs__h{text-decoration:underline;text-underline-offset:3px}
+.mp-hs__arrow{position:absolute;top:50%;transform:translateY(-50%);width:40px;height:40px;border-radius:50%;border:0;
+  background:rgba(6,10,20,.55);color:#fff;font-size:22px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  backdrop-filter:blur(4px);transition:background .18s;z-index:3}
+.mp-hs__arrow:hover{background:rgba(6,10,20,.8)}
+.mp-hs__prev{left:12px}.mp-hs__next{right:12px}
+.mp-hs__dots{position:absolute;left:0;right:0;bottom:12px;display:flex;justify-content:center;gap:7px;z-index:3}
+.mp-hs__dot{width:8px;height:8px;border-radius:50%;border:0;padding:0;cursor:pointer;background:rgba(255,255,255,.4);transition:all .2s}
+.mp-hs__dot.is-active{background:#fff;width:22px;border-radius:5px}
+.mp-hs__arrow:focus-visible,.mp-hs__dot:focus-visible{outline:2px solid #fff;outline-offset:2px}
+@media(max-width:640px){.mp-hs__arrow{width:34px;height:34px;font-size:19px}.mp-hs__prev{left:8px}.mp-hs__next{right:8px}}
+@media(prefers-reduced-motion:reduce){.mp-hs__track{transition:none}}
+</style>
+<script>
+(function(){
+  var R=document.getElementById('mpHs'); if(!R) return;
+  var track=document.getElementById('mpHsTrack');
+  var slides=[].slice.call(R.querySelectorAll('.mp-hs__slide'));
+  var dots=[].slice.call(R.querySelectorAll('.mp-hs__dot'));
+  var n=slides.length, cur=0, timer=null;
+  var RM=window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+  function go(i){
+    cur=(i%n+n)%n;
+    track.style.transform='translateX(-'+(cur*100)+'%)';
+    slides.forEach(function(s,k){ s.classList.toggle('is-active',k===cur); if(k===cur){s.removeAttribute('aria-hidden');}else{s.setAttribute('aria-hidden','true');} });
+    dots.forEach(function(d,k){ d.classList.toggle('is-active',k===cur); if(k===cur){d.setAttribute('aria-current','true');}else{d.removeAttribute('aria-current');} });
+  }
+  function start(){ if(RM||n<2) return; stop(); timer=setInterval(function(){ go(cur+1); },6000); }
+  function stop(){ if(timer){ clearInterval(timer); timer=null; } }
+  R.querySelector('.mp-hs__next').addEventListener('click',function(){ go(cur+1); start(); });
+  R.querySelector('.mp-hs__prev').addEventListener('click',function(){ go(cur-1); start(); });
+  dots.forEach(function(d,k){ d.addEventListener('click',function(){ go(k); start(); }); });
+  R.addEventListener('mouseenter',stop); R.addEventListener('mouseleave',start);
+  R.addEventListener('focusin',stop); R.addEventListener('focusout',start);
+  document.addEventListener('visibilitychange',function(){ document.hidden?stop():start(); });
+  // basic touch swipe
+  var x0=null;
+  R.addEventListener('touchstart',function(e){ x0=e.touches[0].clientX; stop(); },{passive:true});
+  R.addEventListener('touchend',function(e){ if(x0===null) return; var dx=e.changedTouches[0].clientX-x0; if(Math.abs(dx)>40) go(cur+(dx<0?1:-1)); x0=null; start(); },{passive:true});
+  start();
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
 
 /* ============================================================================
  * [mp_ticker_block] - a two-row strip placed below the header (front page):
