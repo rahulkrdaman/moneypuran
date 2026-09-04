@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.24.0
+ * Version: 1.24.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -5249,6 +5249,7 @@ function mp_an_context($sym) {
 
     return array(
         'niftyChg'  => $niftyChg,
+        'spxChg'    => $scn['global']['sp500']['chg'] ?? null,
         'vix'       => $vix,
         'regime'    => $regime,
         'usLine'    => $scn['usLine'] ?? null,
@@ -5652,7 +5653,7 @@ function mp_an_ai_compact($a) {
         'levels' => array('support' => $l['support'] ?? array(), 'resistance' => $l['resistance'] ?? array(),
                           'nearestSupport' => $l['nearestSupport'] ?? null, 'nearestResistance' => $l['nearestResistance'] ?? null),
         'patterns' => array_map(function ($x) { return $x['name'] . ' (' . $x['dir'] . ')'; }, $a['patterns']),
-        'market' => array('regime' => $c['regime'], 'niftyChangePct' => $c['niftyChg'], 'indiaVix' => $c['vix'],
+        'market' => array('regime' => $c['regime'], 'niftyChangePct' => $c['niftyChg'], 'sp500ChangePct' => $c['spxChg'] ?? null, 'indiaVix' => $c['vix'],
                           'sector' => $c['sector'], 'sectorRelStrength1m' => $c['sectorRS1m']),
         'returns' => array('oneMonth' => $a['chg1m'], 'oneYear' => $a['chg1y']),
         'computedScenarios' => $a['scenarios'],
@@ -5716,10 +5717,15 @@ function mp_an_ai_template($a) {
         if ($pt['dir'] === 'bullish') $R[] = 'A ' . $pt['name'] . ' candlestick formed on the latest bar.';
         elseif ($pt['dir'] === 'bearish') $K[] = 'A ' . $pt['name'] . ' candlestick formed on the latest bar.';
     }
+    $isUs = (isset($a['exchange']) && $a['exchange'] === 'US');
     $reg = array('risk-on' => 'The broad market is in a risk-on mood', 'risk-off' => 'The broad market is risk-off', 'neutral' => 'The broad market is neutral');
-    $R[] = ($reg[$c['regime']] ?? 'The market backdrop is mixed')
-        . ($c['niftyChg'] !== null ? ' (Nifty ' . ($c['niftyChg'] >= 0 ? '+' : '') . $c['niftyChg'] . '%)' : '') . '.';
-    if ($c['vix'] !== null && $c['vix'] > 18) $K[] = 'India VIX at ' . $c['vix'] . ' signals elevated volatility.';
+    if ($isUs && isset($c['spxChg']) && $c['spxChg'] !== null) {
+        $R[] = ($reg[$c['regime']] ?? 'The market backdrop is mixed') . ' (S&amp;P 500 ' . ($c['spxChg'] >= 0 ? '+' : '') . $c['spxChg'] . '%).';
+    } else {
+        $R[] = ($reg[$c['regime']] ?? 'The market backdrop is mixed')
+            . ($c['niftyChg'] !== null ? ' (Nifty ' . ($c['niftyChg'] >= 0 ? '+' : '') . $c['niftyChg'] . '%)' : '') . '.';
+    }
+    if (!$isUs && $c['vix'] !== null && $c['vix'] > 18) $K[] = 'India VIX at ' . $c['vix'] . ' signals elevated volatility.';
     if ($c['sectorRS1m'] !== null && $c['sector']) {
         if ($c['sectorRS1m'] > 1) $R[] = 'It is outperforming the ' . $c['sector'] . ' sector by ' . $c['sectorRS1m'] . ' pts over the past month.';
         elseif ($c['sectorRS1m'] < -1) $K[] = 'It is lagging the ' . $c['sector'] . ' sector by ' . abs($c['sectorRS1m']) . ' pts over the past month.';
