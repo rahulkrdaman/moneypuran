@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -780,3 +780,47 @@ add_filter('pre_comment_approved', function ($approved, $commentdata) {
     if (($commentdata['comment_type'] ?? 'comment') === 'comment') return 1;
     return $approved;
 }, 99, 2);
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Site UX (v1.3.0): a Back / Forward strip at the top of every page's content,
+ * plus horizontal padding for the sidebar widget cards (the theme ships them
+ * with padding:0 so content sits flush against the card border).
+ * ───────────────────────────────────────────────────────────────────────── */
+add_action('wp_head', function () {
+    if (is_admin() || is_feed() || (function_exists('is_embed') && is_embed())) return;
+    echo '<style id="mp-ux-css">'
+        . '.mp-widget{padding:14px 16px !important}'
+        . '.mp-widget>.mp-widget-title{margin:0 0 10px}'
+        . '.mp-widget .mp-widget-body{padding-left:0 !important;padding-right:0 !important}'
+        . '.mp-navbf{display:flex;gap:8px;align-items:center;margin:2px 0 16px}'
+        . '.mp-navbf button{display:inline-flex;align-items:center;gap:4px;padding:6px 13px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;background:var(--mp-surface,#fff);color:var(--mp-ink2,#475569);font-family:inherit;font-size:12.5px;font-weight:600;line-height:1;cursor:pointer;transition:background .14s,color .14s}'
+        . '.mp-navbf button:hover{background:var(--mp-surface2,#f1f5f9);color:var(--mp-ink,#0f172a)}'
+        . '.mp-navbf button[hidden]{display:none}'
+        . 'html[data-theme="dark"] .mp-navbf button{background:#111827}'
+        . '</style>';
+}, 20);
+
+add_action('wp_footer', function () {
+    if (is_admin() || is_feed() || (function_exists('is_embed') && is_embed())) return;
+    ?>
+<script id="mp-ux-js">
+(function(){
+  var b=document.body;
+  if(b.classList.contains('home')||b.classList.contains('error404')) return;
+  var host=document.querySelector('.mp-main .mp-container')||document.querySelector('.mp-container')||document.querySelector('.mp-main')||document.querySelector('main')||document.getElementById('main');
+  if(!host||document.querySelector('.mp-navbf')) return;
+  var wentBack=false;
+  try{ wentBack=sessionStorage.getItem('mpNavBack')==='1'; }catch(e){}
+  var nav=document.createElement('nav');
+  nav.className='mp-navbf'; nav.setAttribute('aria-label','Page navigation');
+  var back=document.createElement('button'); back.type='button'; back.innerHTML='&#8249;&nbsp;Back';
+  var fwd=document.createElement('button'); fwd.type='button'; fwd.innerHTML='Forward&nbsp;&#8250;';
+  back.addEventListener('click',function(){ try{sessionStorage.setItem('mpNavBack','1');}catch(e){} if(history.length>1){history.back();}else{location.href='/';} });
+  fwd.addEventListener('click',function(){ history.forward(); });
+  if(!wentBack) fwd.hidden=true;
+  nav.appendChild(back); nav.appendChild(fwd);
+  host.insertBefore(nav,host.firstChild);
+})();
+</script>
+    <?php
+}, 20);
