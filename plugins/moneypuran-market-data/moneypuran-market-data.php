@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.24.4
+ * Version: 1.25.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1751,7 +1751,7 @@ add_shortcode('mp_gold_rates', function ($atts) {
   <div class="mp-rates__bar">
     <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
     <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
-    <span class="mp-rates__asof">Updated <span data-role="asof"><?php echo $g ? esc_html(date('j M Y', strtotime($g['asOf']))) : '—'; ?></span></span>
+    <span class="mp-rates__asof">Updated <span data-role="asof" data-live-datetime="datetime"><?php echo $g ? esc_html(date('j M Y', strtotime($g['asOf']))) : '—'; ?></span></span>
   </div>
   <div class="mp-rates__cards" data-role="cards">
     <?php if ($g) : foreach (array('24k'=>'24K (999)','22k'=>'22K (916)','18k'=>'18K (750)') as $k=>$lbl): $row=$g['gold_'.$k]; ?>
@@ -1835,7 +1835,6 @@ add_shortcode('mp_gold_rates', function ($atts) {
   function paint(d){
     G = d.gold; if(!G) return;
     setCityLabel(d.city);
-    W.querySelector('[data-role=asof]').textContent = new Date(G.asOf).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
     var C = W.querySelector('[data-role=cards]'), h = '';
     [['24k','24K (999)'],['22k','22K (916)'],['18k','18K (750)']].forEach(function(x){
       var r = G['gold_'+x[0]];
@@ -1893,7 +1892,7 @@ add_shortcode('mp_fuel_prices', function ($atts) {
   <div class="mp-rates__bar">
     <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
     <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
-    <span class="mp-rates__asof">As of <span data-role="asof"><?php echo esc_html(date('j M Y', strtotime($f['updated']))); ?></span></span>
+    <span class="mp-rates__asof">Updated <span data-role="asof" data-live-datetime="datetime"><?php echo esc_html(date('j M Y', strtotime($f['updated']))); ?></span></span>
   </div>
   <div class="mp-rates__cards" data-role="cards">
     <div class="mp-rate-card"><h4>Petrol</h4><div class="v" data-role="petrol">₹<?php echo number_format($f['petrol'], 2); ?></div><div class="u">per litre</div></div>
@@ -1934,7 +1933,6 @@ add_shortcode('mp_fuel_prices', function ($atts) {
         setCityLabel(d.city);
         W.querySelector('[data-role=petrol]').textContent = '₹'+Number(d.fuel.petrol).toFixed(2);
         W.querySelector('[data-role=diesel]').textContent = '₹'+Number(d.fuel.diesel).toFixed(2);
-        W.querySelector('[data-role=asof]').textContent = new Date(d.fuel.updated).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
       }).catch(function(){});
   }
   sel.addEventListener('change', function(){ setCityLabel(sel.value); window.mpRatesSetCity(sel.value); load(sel.value); });
@@ -1989,7 +1987,7 @@ add_shortcode('mp_silver_rate', function ($atts) {
   <div class="mp-rates__bar">
     <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
     <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
-    <span class="mp-rates__asof">Updated <span data-role="asof"><?php echo $s ? esc_html(date('j M Y', strtotime($s['asOf']))) : '—'; ?></span></span>
+    <span class="mp-rates__asof">Updated <span data-role="asof" data-live-datetime="datetime"><?php echo $s ? esc_html(date('j M Y', strtotime($s['asOf']))) : '—'; ?></span></span>
   </div>
   <div class="mp-rates__cards" data-role="cards">
     <?php if ($s) :
@@ -2072,7 +2070,6 @@ add_shortcode('mp_silver_rate', function ($atts) {
   function paint(d){
     S = d.silver; if(!S) return;
     setCityLabel(d.city);
-    W.querySelector('[data-role=asof]').textContent = new Date(S.asOf).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
     var rows = [['1 gram',S.per_g,2],['10 grams',S.per_10g,1],['100 grams',S.per_100g,0],['1 kilogram',S.per_kg,0]];
     var h = rows.map(function(r){
       return '<div class="mp-rate-card"><h4>999 Silver · '+r[0]+'</h4><div class="v">₹'+Number(r[1]).toLocaleString('en-IN',{maximumFractionDigits:r[2]})+'</div><div class="u">'+r[0]+'</div>'+chgHtml(S.chg_pct)+'</div>';
@@ -5835,7 +5832,7 @@ add_shortcode('mp_analyzer', function ($atts) {
         <span class="mp-az__chg <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $up ? '&#9650;' : '&#9660;'; ?> <?php echo ($up ? '+' : '') . number_format($a['change'], 2); ?> (<?php echo ($up ? '+' : '') . $a['changePct']; ?>%)</span>
         <?php endif; ?>
       </div>
-      <div class="mp-az__meta">Data may be delayed &middot; updated <?php echo esc_html(wp_date('H:i')); ?> IST &middot; source: <?php echo esc_html($a['dataMeta']['source']); ?></div>
+      <div class="mp-az__meta">Data may be delayed &middot; updated <span data-live-datetime="time"><?php echo esc_html(wp_date('H:i')); ?></span> &middot; source: <?php echo esc_html($a['dataMeta']['source']); ?></div>
     </div>
     <div class="mp-az__modes" role="tablist">
       <?php foreach (array('intraday' => 'Intraday', 'swing' => 'Swing', 'positional' => 'Positional') as $mk => $ml) : ?>
@@ -6361,3 +6358,38 @@ add_filter('rank_math/frontend/description', function ($desc) {
     if (is_page('us-markets')) return 'US stock market today: live S&P 500, Dow Jones and Nasdaq levels, top US mega-cap stocks (Apple, Microsoft, Tesla, Nvidia and more) with a Bullish/Neutral/Bearish signal, and a full trend and scenario analysis for any US stock.';
     return $desc;
 }, 21);
+
+
+
+/* ============================================================================
+ * LIVE VISITOR-LOCAL DATE/TIME (v1.25.0)
+ *  Any element with data-live-datetime="date|time|datetime" gets its text
+ *  replaced with the VISITOR's own current date/time - their browser locale
+ *  and timezone (no server "IST" assumption, no stale fetch-timestamp).
+ *  Ticks every 20s. Scoped to is_page() only, so it never touches blog
+ *  article publish dates (single.php is a different template, untouched).
+ * ==========================================================================*/
+add_action('wp_footer', function () {
+    if (!is_page() || is_admin()) return;
+    ?>
+<script id="mp-livetime-js">
+(function(){
+  function fmtDate(d){ try { return d.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}); } catch(e){ return d.toDateString(); } }
+  function fmtTime(d){ try { return d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}); } catch(e){ return d.toTimeString().slice(0,5); } }
+  function paint(){
+    var d = new Date();
+    var els = document.querySelectorAll('[data-live-datetime]');
+    for (var i=0;i<els.length;i++){
+      var el = els[i], mode = el.getAttribute('data-live-datetime');
+      var txt = mode==='time' ? fmtTime(d) : mode==='date' ? fmtDate(d) : (fmtDate(d)+', '+fmtTime(d));
+      if (el.textContent !== txt) el.textContent = txt;
+      if (el.tagName === 'TIME') { try { el.setAttribute('datetime', d.toISOString()); } catch(e){} }
+    }
+  }
+  paint();
+  setInterval(paint, 20000);
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) paint(); });
+}());
+</script>
+    <?php
+}, 25);
