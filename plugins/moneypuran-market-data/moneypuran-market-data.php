@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.19.0
+ * Version: 1.20.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -5332,7 +5332,7 @@ function mp_an_view_class($v) {
 }
 
 add_shortcode('mp_analyzer', function ($atts) {
-    $atts = shortcode_atts(array('symbol' => '', 'mode' => '', 'search' => ''), $atts);
+    $atts = shortcode_atts(array('symbol' => '', 'mode' => '', 'search' => '', 'related' => ''), $atts);
     $q = isset($_GET['q']) ? sanitize_text_field(wp_unslash($_GET['q'])) : '';
     $symbol = $atts['symbol'] !== '' ? $atts['symbol'] : $q;
     $mode = isset($_GET['mode']) ? sanitize_key($_GET['mode']) : ($atts['mode'] ?: 'swing');
@@ -5490,6 +5490,7 @@ add_shortcode('mp_analyzer', function ($atts) {
   <?php endif; ?>
 
   <p class="mp-az__disc"><?php echo esc_html($a['disclaimer']); ?> Futures and options carry substantial risk; scenarios are analytical possibilities, not guaranteed outcomes.</p>
+  <?php if (!empty($atts['related'])) echo mp_an_related_html($a); ?>
 </div>
     <?php
     return ob_get_clean();
@@ -5586,6 +5587,125 @@ function mp_an_ui_css() {
 html[data-theme="dark"] .mp-az__modes a.is-on{box-shadow:0 1px 3px rgba(0,0,0,.4)}
 </style>';
 }
+
+/* ---- [mp_analyzer related="1"] — coverage + peer links + FAQ for NSE stock pages ---- */
+function mp_an_related_html($a) {
+    if (empty($a['ok']) || $a['exchange'] !== 'NSE') return '';
+    $bare = preg_replace('/\.(NS|BO)$/', '', $a['symbol']);
+    $flat = mp_md_stock_universe_flat();
+    $meta = isset($flat[$bare]) ? $flat[$bare] : null;
+    $name = $a['label'];
+    $sector = $a['context']['sector'] ? $a['context']['sector'] : ($meta ? $meta['sector'] : '');
+    $slug = mp_md_stock_slug($bare);
+    $price = number_format($a['price'], 2);
+    $up = ($a['changePct'] !== null && $a['changePct'] >= 0);
+    $chgAbs = $a['changePct'] !== null ? abs($a['changePct']) : 0;
+    $viewLabel = mp_an_view_label($a['view']);
+    $reason = !empty($a['ai']['keyReasons'][0]) ? $a['ai']['keyReasons'][0] : '';
+    $nr = isset($a['levels']['nearestResistance']) ? $a['levels']['nearestResistance'] : null;
+    $ns = isset($a['levels']['nearestSupport']) ? $a['levels']['nearestSupport'] : null;
+    $sectorNote = function_exists('mp_md_sector_note') ? mp_md_sector_note($sector) : '';
+
+    $faq = array(
+        array(
+            'q' => 'What is the ' . $name . ' share price today?',
+            'a' => $name . ' (NSE: ' . $bare . ') is trading at Rs ' . $price . ', ' . ($up ? 'up' : 'down') . ' ' . $chgAbs . '% on the day. Prices update through the session and may be delayed.',
+        ),
+        array(
+            'q' => 'What does MoneyPuran\'s analysis say about ' . $name . '?',
+            'a' => 'The rules-based engine reads ' . $name . ' as ' . strtolower($viewLabel) . ' on the ' . $a['mode'] . ' timeframe, at a model confidence of ' . (int) $a['confidence'] . '/100. It is an analytical read of price trend, momentum, volume, key levels and market context &mdash; not a recommendation.',
+        ),
+        array(
+            'q' => 'Does MoneyPuran publish a ' . $name . ' share price target?',
+            'a' => 'No. MoneyPuran does not issue price targets. The analysis shows computed support and resistance'
+                . (($ns !== null && $nr !== null) ? ' (nearby support around Rs ' . number_format($ns, 2) . ', resistance around Rs ' . number_format($nr, 2) . ')' : '')
+                . ' plus scenario conditions, so you can see the levels that would confirm or invalidate the current view.',
+        ),
+        array(
+            'q' => 'Why is ' . $name . ' up or down today?',
+            'a' => trim(($reason ? $reason . ' ' : '') . $sectorNote),
+        ),
+    );
+
+    ob_start(); ?>
+<div class="mp-az-rel">
+  <h3>MoneyPuran coverage</h3>
+  <div id="mpAzNews-<?php echo esc_attr($slug); ?>" class="mp-az-rel__news" data-name="<?php echo esc_attr($name); ?>">Loading&hellip;</div>
+  <?php
+  $peers = array();
+  if ($sector) {
+      foreach ($flat as $ps => $pm) {
+          if ($pm['sector'] === $sector && $ps !== $bare) $peers[$ps] = $pm['name'];
+      }
+  }
+  if ($peers) : ?>
+  <h3>Other <?php echo esc_html($sector); ?> stocks</h3>
+  <p class="mp-az-rel__peers">
+    <?php foreach ($peers as $ps => $pn) : ?><a href="<?php echo esc_url(home_url('/stocks/' . mp_md_stock_slug($ps) . '/')); ?>"><?php echo esc_html($pn); ?></a><?php endforeach; ?>
+  </p>
+  <?php endif; ?>
+  <h3>FAQ</h3>
+  <div class="mp-az-rel__faq">
+    <?php foreach ($faq as $i => $f) : ?>
+    <details<?php echo $i === 0 ? ' open' : ''; ?>><summary><?php echo esc_html($f['q']); ?></summary><p><?php echo wp_kses_post($f['a']); ?></p></details>
+    <?php endforeach; ?>
+  </div>
+</div>
+<script>
+(function(){
+  var el=document.getElementById('mpAzNews-<?php echo esc_js($slug); ?>'); if(!el) return;
+  var name=el.getAttribute('data-name');
+  fetch((location.origin||'')+'/wp-json/wp/v2/posts?per_page=4&search='+encodeURIComponent(name)+'&_fields=title,link')
+    .then(function(r){return r.ok?r.json():[];})
+    .then(function(p){
+      if(p&&p.length){ el.innerHTML='<ul>'+p.map(function(x){return '<li><a href="'+x.link+'">'+x.title.rendered+'</a></li>';}).join('')+'</ul>'; }
+      else { el.innerHTML='<p style="font-size:13px">No MoneyPuran articles on '+name+' yet. <a href="'+(location.origin||'')+'/category/stocks/">Browse our Stocks section</a>.</p>'; }
+    }).catch(function(){ el.innerHTML=''; });
+}());
+</script>
+<script type="application/ld+json"><?php echo wp_json_encode(array(
+  '@context' => 'https://schema.org', '@type' => 'FAQPage',
+  'mainEntity' => array_map(function ($f) {
+      return array('@type' => 'Question', 'name' => wp_strip_all_tags($f['q']),
+          'acceptedAnswer' => array('@type' => 'Answer', 'text' => wp_strip_all_tags($f['a'])));
+  }, $faq),
+), JSON_UNESCAPED_SLASHES); ?></script>
+<style>
+.mp-az-rel{margin:24px 0 0}
+.mp-az-rel h3{font-size:16px;font-weight:700;margin:20px 0 8px}
+.mp-az-rel__news ul{margin:0;padding-left:18px;font-size:13.5px;line-height:1.7}
+.mp-az-rel__peers a{display:inline-block;margin:0 8px 6px 0;font-size:13px;font-weight:600;color:var(--mp-brand,#0057ff);text-decoration:none}
+.mp-az-rel__faq details{border-top:1px solid var(--mp-border,#e2e8f0);padding:9px 0}
+.mp-az-rel__faq summary{font-weight:600;font-size:14px;cursor:pointer}
+.mp-az-rel__faq p{font-size:13.5px;line-height:1.6;margin:6px 0 0;color:var(--mp-ink2,#475569)}
+</style>
+<?php
+    return ob_get_clean();
+}
+
+/* ---- analysis warm-up cron: precompute tracked symbols off the request path ---- */
+function mp_an_warm_symbols() {
+    $syms = array_keys(mp_md_stock_universe_flat());
+    array_unshift($syms, 'NIFTY', 'BANKNIFTY');
+    return apply_filters('mp_an_warm_symbols', array_values(array_unique($syms)));
+}
+add_action('mp_an_warm_cron', function () {
+    $syms = mp_an_warm_symbols();
+    $n = count($syms);
+    if (!$n) return;
+    $per = 5;
+    $off = ((int) get_option('mp_an_warm_off', 0)) % $n;
+    $done = 0;
+    $deadline = time() + 45;
+    for ($i = 0; $i < $per && time() < $deadline; $i++) {
+        mp_an_analyze($syms[($off + $i) % $n], 'swing');
+        $done++;
+    }
+    update_option('mp_an_warm_off', ($off + $done) % $n, false);
+});
+add_action('init', function () {
+    if (!wp_next_scheduled('mp_an_warm_cron')) wp_schedule_event(time() + 150, 'mp_md_2min', 'mp_an_warm_cron');
+});
 
 /* ---- REST ---- */
 add_action('rest_api_init', function () {
