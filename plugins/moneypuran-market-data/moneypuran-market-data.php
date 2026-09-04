@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.20.1
+ * Version: 1.20.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -2719,6 +2719,9 @@ function mp_candle_symbol_map() {
         'tcs'       => array('TCS.NS',      'TCS',               null),
         'infy'      => array('INFY.NS',     'Infosys',           null),
         'hdfcbank'  => array('HDFCBANK.NS', 'HDFC Bank',         null),
+        'tmpv'      => array('TMPV.NS',     'Tata Motors PV',    null),
+        'tmcv'      => array('TMCV.NS',     'Tata Motors CV',    null),
+        'ltm'       => array('LTM.NS',      'LTIMindtree (LTM)', null),
         'sp500'     => array('^GSPC',       'S&P 500',           null),
         'nasdaq'    => array('^IXIC',       'Nasdaq',            null),
     );
