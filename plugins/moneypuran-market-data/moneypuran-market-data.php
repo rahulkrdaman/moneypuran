@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.22.1
+ * Version: 1.23.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -63,6 +63,13 @@ function mp_md_groups() {
             '^NSEBANK' => 'Nifty Bank', '^CNXIT' => 'Nifty IT', '^CNXPHARMA' => 'Nifty Pharma',
             '^CNXAUTO' => 'Nifty Auto', '^CNXFMCG' => 'Nifty FMCG', '^CNXMETAL' => 'Nifty Metal',
             '^CNXENERGY' => 'Nifty Energy', '^CNXREALTY' => 'Nifty Realty',
+        ),
+        // US mega-caps for the session-aware ticker (v1.23.0) — fetched with no
+        // suffix (Yahoo default = US listing), same cadence as the world indices.
+        'us_stocks' => array(
+            'AAPL' => 'Apple', 'MSFT' => 'Microsoft', 'GOOGL' => 'Alphabet', 'AMZN' => 'Amazon',
+            'NVDA' => 'Nvidia', 'META' => 'Meta Platforms', 'TSLA' => 'Tesla', 'JPM' => 'JPMorgan Chase',
+            'V' => 'Visa', 'WMT' => 'Walmart', 'XOM' => 'ExxonMobil', 'UNH' => 'UnitedHealth',
         ),
     );
 }
@@ -360,11 +367,13 @@ add_action('rest_api_init', function () {
         'methods'             => 'GET',
         'permission_callback' => '__return_true',
         'args'                => array(
-            'only'   => array('default' => 'all'),
-            'filter' => array('default' => 'trending'),
+            'only'    => array('default' => 'all'),
+            'filter'  => array('default' => 'trending'),
+            'session' => array('default' => ''),
         ),
         'callback' => function (WP_REST_Request $req) {
             $only = $req->get_param('only');
+            $session = sanitize_key($req->get_param('session'));
             $body = array('asOf' => gmdate('c'), 'source' => 'Market data', 'note' => 'Prices may be delayed. Not investment advice.');
 
             if ($only === 'dashboard') {
@@ -372,6 +381,9 @@ add_action('rest_api_init', function () {
                 unset($body['_at']);
             } elseif ($only === 'stocks') {
                 $body['stocks'] = mp_md_sorted_stocks($req->get_param('filter'));
+            } elseif ($only === 'all' && $session === 'us') {
+                $body['indices'] = mp_md_tb_us_index_rows();
+                $body['stocks']  = mp_md_us_stocks($req->get_param('filter'));
             } else {
                 $idx = mp_md_get_indices();
                 $body['indices'] = array_values($idx['indices']);
@@ -1285,7 +1297,62 @@ function mp_md_tb_session_label($s) {
     return isset($m[$s]) ? $m[$s] : 'Markets';
 }
 
-function mp_md_tb_quotes() {
+/** US S&P/Dow/Nasdaq (from the 2-min groups snapshot) + Bitcoin (fast snapshot), row-shaped like mp_md_get_indices(). */
+function mp_md_tb_us_index_rows() {
+    $grp  = get_transient(MP_MD_GRP_KEY);
+    $rows = array();
+    if (is_array($grp) && !empty($grp['world'])) {
+        foreach ($grp['world'] as $r) {
+            if (in_array($r['sym'], array('^GSPC', '^DJI', '^IXIC'), true) && isset($r['price'])) {
+                $rows[] = array('sym' => $r['sym'], 'price' => $r['price'], 'chgPct' => $r['chgPct'], 'change' => $r['change']);
+            }
+        }
+    }
+    $idx = mp_md_get_indices();
+    if (isset($idx['indices']['BTC-USD']['price'])) $rows[] = $idx['indices']['BTC-USD'];
+    return $rows;
+}
+
+/** US mega-cap movers (from the 2-min groups snapshot), row-shaped like mp_md_sorted_stocks(). */
+function mp_md_us_stocks($filter = 'trending') {
+    $grp  = get_transient(MP_MD_GRP_KEY);
+    $rows = (is_array($grp) && !empty($grp['us_stocks'])) ? $grp['us_stocks'] : array();
+    $out  = array();
+    foreach ($rows as $r) {
+        if (!isset($r['price'])) continue;
+        $out[] = array('symbol' => $r['sym'], 'name' => $r['label'], 'price' => $r['price'], 'change_pct' => $r['chgPct'], 'change' => $r['change']);
+    }
+    if ($filter === 'losers') {
+        usort($out, function ($a, $b) { return ($a['change_pct'] ?? 99) <=> ($b['change_pct'] ?? 99); });
+    } elseif ($filter === 'gainers') {
+        usort($out, function ($a, $b) { return ($b['change_pct'] ?? -99) <=> ($a['change_pct'] ?? -99); });
+    } else {
+        usort($out, function ($a, $b) { return abs($b['change_pct'] ?? 0) <=> abs($a['change_pct'] ?? 0); });
+    }
+    return array_slice($out, 0, 10);
+}
+
+/** Ticker content for the active session: 'us' -> US indices + US movers + crypto; else -> Indian indices/movers + crypto. */
+function mp_md_tb_quotes($session = 'india') {
+    $out = array();
+
+    if ($session === 'us') {
+        $nmW = array('^GSPC' => 'S&P 500', '^DJI' => 'DOW JONES', '^IXIC' => 'NASDAQ');
+        foreach (mp_md_tb_us_index_rows() as $r) {
+            if (!isset($r['price'])) continue;
+            $isBtc = ($r['sym'] === 'BTC-USD');
+            $out[] = array(
+                't' => $isBtc ? 'BITCOIN' : (isset($nmW[$r['sym']]) ? $nmW[$r['sym']] : $r['sym']),
+                'p' => $r['price'], 'c' => $r['chgPct'], 'cur' => $isBtc ? '' : '$',
+            );
+        }
+        foreach (mp_md_us_stocks('trending') as $s) {
+            if (!isset($s['price'])) continue;
+            $out[] = array('t' => $s['symbol'], 'p' => $s['price'], 'c' => $s['change_pct'], 'cur' => '$');
+        }
+        return $out;
+    }
+
     $idx  = mp_md_get_indices();
     $rows = (is_array($idx) && !empty($idx['indices'])) ? array_values($idx['indices']) : array();
     $nm = array(
@@ -1293,7 +1360,6 @@ function mp_md_tb_quotes() {
         'INR=X' => 'USD/INR', 'GC=F' => 'GOLD', 'CL=F' => 'CRUDE OIL', 'BTC-USD' => 'BITCOIN',
     );
     $inr = array('INR=X' => 1);
-    $out = array();
     foreach ($rows as $r) {
         if (!isset($r['price']) || !isset($r['sym'])) continue;
         $cur = isset($inr[$r['sym']]) ? '&#8377;' : (($r['sym'] === 'GC=F' || $r['sym'] === 'CL=F') ? '$' : '');
@@ -1341,7 +1407,7 @@ add_shortcode('mp_ticker_block', function () {
     $active   = $sessions[0];
     $closed   = ($active === 'closed');
     $qhtml    = '';
-    foreach (mp_md_tb_quotes() as $it) $qhtml .= mp_md_tb_quote_html($it);
+    foreach (mp_md_tb_quotes($active) as $it) $qhtml .= mp_md_tb_quote_html($it);
     if ($qhtml === '') $qhtml = '<span class="mp-tb__q">Live quotes loading&hellip;</span>';
 
     ob_start(); ?>
@@ -1418,8 +1484,9 @@ add_shortcode('mp_ticker_block', function () {
     return s[0]||'closed';
   }
   function num(n){return Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
-  var NM={'^BSESN':'SENSEX','^NSEI':'NIFTY 50','^NSEBANK':'BANK NIFTY','INR=X':'USD/INR','GC=F':'GOLD','CL=F':'CRUDE OIL','BTC-USD':'BITCOIN'};
+  var NM={'^BSESN':'SENSEX','^NSEI':'NIFTY 50','^NSEBANK':'BANK NIFTY','INR=X':'USD/INR','GC=F':'GOLD','CL=F':'CRUDE OIL','BTC-USD':'BITCOIN','^GSPC':'S&P 500','^DJI':'DOW JONES','^IXIC':'NASDAQ'};
   var INR={'INR=X':1};
+  var USDIDX={'^GSPC':1,'^DJI':1,'^IXIC':1,'GC=F':1,'CL=F':1};
   function slug(s){return String(s).toLowerCase().replace(/&/g,'-and-').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
   function qh(items){
     return items.map(function(it){
@@ -1435,15 +1502,16 @@ add_shortcode('mp_ticker_block', function () {
   function relabel(){ var s=sess(); if(Q) Q.classList.toggle('is-closed',s==='closed'); if(LABEL) LABEL.textContent=LAB[s]||LAB.closed; }
   function refresh(){
     if(!Q||!TRACK) return;
-    fetch(Q.getAttribute('data-endpoint'),{headers:{Accept:'application/json'},credentials:'omit'})
+    var s=sess(), isUS=(s==='us');
+    fetch(Q.getAttribute('data-endpoint')+'&session='+s,{headers:{Accept:'application/json'},credentials:'omit'})
       .then(function(r){return r.ok?r.json():null;})
       .then(function(d){
         if(!d) return;
         var items=[];
         (d.indices||[]).forEach(function(r){ if(r.price==null)return;
-          items.push({t:NM[r.sym]||r.sym,p:r.price,c:r.chgPct,cur:INR[r.sym]?'₹':((r.sym==='GC=F'||r.sym==='CL=F')?'$':'')}); });
+          items.push({t:NM[r.sym]||r.sym,p:r.price,c:r.chgPct,cur:INR[r.sym]?'₹':(USDIDX[r.sym]?'$':'')}); });
         (d.stocks||[]).slice(0,10).forEach(function(s){ if(s.price==null)return;
-          items.push({t:s.symbol||s.sym,p:s.price,c:(s.change_pct!=null?s.change_pct:s.chgPct),cur:'₹',u:'/stocks/'+slug(s.symbol||s.sym)+'/'}); });
+          items.push({t:s.symbol||s.sym,p:s.price,c:(s.change_pct!=null?s.change_pct:s.chgPct),cur:isUS?'$':'₹',u:isUS?null:'/stocks/'+slug(s.symbol||s.sym)+'/'}); });
         if(!items.length) return;
         var h=qh(items);
         TRACK.innerHTML='<span class="mp-tb__half">'+h+'</span><span class="mp-tb__half" aria-hidden="true">'+h+'</span>';
