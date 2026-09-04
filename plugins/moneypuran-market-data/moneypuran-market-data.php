@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.20.0
+ * Version: 1.20.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -3102,10 +3102,10 @@ function mp_md_screener_universe() {
         )),
         'IT & Tech' => array('^CNXIT', array(
             'TCS' => 'Tata Consultancy Services', 'INFY' => 'Infosys', 'HCLTECH' => 'HCL Technologies',
-            'WIPRO' => 'Wipro', 'TECHM' => 'Tech Mahindra', 'LTIM' => 'LTIMindtree',
+            'WIPRO' => 'Wipro', 'TECHM' => 'Tech Mahindra', 'LTM' => 'LTIMindtree (LTM)',
         )),
         'Auto' => array('^CNXAUTO', array(
-            'MARUTI' => 'Maruti Suzuki', 'TATAMOTORS' => 'Tata Motors', 'M&M' => 'Mahindra & Mahindra',
+            'MARUTI' => 'Maruti Suzuki', 'TMPV' => 'Tata Motors PV', 'TMCV' => 'Tata Motors CV', 'M&M' => 'Mahindra & Mahindra',
             'BAJAJ-AUTO' => 'Bajaj Auto', 'EICHERMOT' => 'Eicher Motors', 'HEROMOTOCO' => 'Hero MotoCorp',
         )),
         'FMCG & Consumer' => array('^CNXFMCG', array(
