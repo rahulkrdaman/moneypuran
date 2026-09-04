@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.23.0
+ * Version: 1.24.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1160,6 +1160,7 @@ if (!wp_next_scheduled('mp_md_daily_touch')) {
 function mp_md_quick_tools() {
     return apply_filters('mp_quick_tools', array(
         'Stock Analysis'    => '/stock-analysis/',
+        'US Markets'        => '/us-markets/',
         'Gold Rate Today'   => '/gold-rates/',
         'Silver Rate Today' => '/silver-rate-today/',
         'Fuel Prices'       => '/fuel-prices/',
@@ -3071,6 +3072,19 @@ function mp_candle_symbol_map() {
         'ltm'       => array('LTM.NS',      'LTIMindtree (LTM)', null),
         'sp500'     => array('^GSPC',       'S&P 500',           null),
         'nasdaq'    => array('^IXIC',       'Nasdaq',            null),
+        'dow'       => array('^DJI',        'Dow Jones',         null),
+        'aapl'      => array('AAPL',        'Apple',             null),
+        'msft'      => array('MSFT',        'Microsoft',         null),
+        'googl'     => array('GOOGL',       'Alphabet',          null),
+        'amzn'      => array('AMZN',        'Amazon',            null),
+        'nvda'      => array('NVDA',        'Nvidia',            null),
+        'meta'      => array('META',        'Meta Platforms',    null),
+        'tsla'      => array('TSLA',        'Tesla',             null),
+        'jpm'       => array('JPM',         'JPMorgan Chase',    null),
+        'v'         => array('V',           'Visa',              null),
+        'wmt'       => array('WMT',         'Walmart',           null),
+        'xom'       => array('XOM',         'ExxonMobil',        null),
+        'unh'       => array('UNH',         'UnitedHealth',      null),
     );
 }
 
@@ -5406,11 +5420,32 @@ function mp_an_resolve_query($raw) {
         'SENSEX' => 'SENSEX', 'BSE SENSEX' => 'SENSEX', 'BSESN' => 'SENSEX',
         'NIFTY IT' => 'NIFTYIT', 'NIFTY AUTO' => 'NIFTYAUTO', 'NIFTY PHARMA' => 'NIFTYPHARMA',
         'NIFTY FMCG' => 'NIFTYFMCG', 'NIFTY METAL' => 'NIFTYMETAL', 'NIFTY ENERGY' => 'NIFTYENERGY',
+        'DOW' => 'DOW', 'DOW JONES' => 'DOW', 'DOWJONES' => 'DOW', 'DJI' => 'DOW',
+        'NASDAQ' => 'NASDAQ', 'NASDAQ COMPOSITE' => 'NASDAQ', 'IXIC' => 'NASDAQ',
+        'SP500' => 'SP500', 'S&P 500' => 'SP500', 'S&P500' => 'SP500', 'SPX' => 'SP500', 'SANDP500' => 'SP500', 'GSPC' => 'SP500',
     );
     if (isset($alias[$u])) return $alias[$u];
 
+    // US mega-cap company names -> ticker (no dynamic "universe" for these, unlike NSE).
+    $usAlias = array(
+        'APPLE' => 'AAPL', 'APPLEINC' => 'AAPL',
+        'MICROSOFT' => 'MSFT', 'MICROSOFTCORP' => 'MSFT',
+        'ALPHABET' => 'GOOGL', 'GOOGLE' => 'GOOGL',
+        'AMAZON' => 'AMZN', 'AMAZONCOM' => 'AMZN',
+        'NVIDIA' => 'NVDA',
+        'META' => 'META', 'FACEBOOK' => 'META', 'METAPLATFORMS' => 'META',
+        'TESLA' => 'TSLA', 'TESLAINC' => 'TSLA',
+        'JPMORGAN' => 'JPM', 'JPMORGANCHASE' => 'JPM', 'JPMORGANCHASECO' => 'JPM',
+        'VISA' => 'V', 'VISAINC' => 'V',
+        'WALMART' => 'WMT',
+        'EXXON' => 'XOM', 'EXXONMOBIL' => 'XOM',
+        'UNITEDHEALTH' => 'UNH', 'UNITEDHEALTHGROUP' => 'UNH',
+    );
+    $un = preg_replace('/[^A-Z0-9]/', '', $u);
+    if (isset($usAlias[$un])) return $usAlias[$un];
+
     $flat = function_exists('mp_md_stock_universe_flat') ? mp_md_stock_universe_flat() : array();
-    $tick = preg_replace('/[^A-Z0-9]/', '', $u);
+    $tick = $un;
     if ($tick !== '' && isset($flat[$tick])) return $tick;
 
     $norm = function ($s) { return preg_replace('/[^a-z0-9]/', '', strtolower((string) $s)); };
@@ -5446,6 +5481,7 @@ function mp_an_analyze($symbol_or_key, $mode = 'swing') {
     }
     $isIndex = (strpos($ysym, '^') === 0);
     $isNseStock = (substr($ysym, -3) === '.NS');
+    $isUsStock = (!$isIndex && !$isNseStock && preg_match('/^[A-Z]{1,5}$/', $ysym) === 1);
 
     $C = array_column($bars, 4); $H = array_column($bars, 2); $L = array_column($bars, 3); $V = array_column($bars, 5);
     $quote = mp_md_yahoo_one($ysym);
@@ -5495,7 +5531,7 @@ function mp_an_analyze($symbol_or_key, $mode = 'swing') {
         'ok'        => true,
         'symbol'    => $ysym,
         'label'     => $label,
-        'exchange'  => $isNseStock ? 'NSE' : ($isIndex ? 'Index' : ''),
+        'exchange'  => $isNseStock ? 'NSE' : ($isIndex ? 'Index' : ($isUsStock ? 'US' : '')),
         'mode'      => $mode,
         'price'     => $price !== null ? round($price, 2) : null,
         'change'    => ($price !== null && $prev !== null) ? round($price - $prev, 2) : null,
@@ -5784,7 +5820,7 @@ add_shortcode('mp_analyzer', function ($atts) {
     <div class="mp-az__id">
       <h2 class="mp-az__name"><?php echo esc_html($a['label']); ?><?php if ($a['exchange']) : ?> <span><?php echo esc_html($a['exchange']); ?></span><?php endif; ?></h2>
       <div class="mp-az__px">
-        <b><?php echo $a['exchange'] === 'NSE' ? '&#8377;' : ''; ?><?php echo number_format($a['price'], 2); ?></b>
+        <b><?php echo $a['exchange'] === 'NSE' ? '&#8377;' : ($a['exchange'] === 'US' ? '$' : ''); ?><?php echo number_format($a['price'], 2); ?></b>
         <?php if ($a['changePct'] !== null) : ?>
         <span class="mp-az__chg <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $up ? '&#9650;' : '&#9660;'; ?> <?php echo ($up ? '+' : '') . number_format($a['change'], 2); ?> (<?php echo ($up ? '+' : '') . $a['changePct']; ?>%)</span>
         <?php endif; ?>
@@ -6137,3 +6173,180 @@ add_action('rest_api_init', function () {
     ));
 });
 
+
+
+
+/* ============================================================================
+ * US MARKETS (v1.24.0)
+ *  [mp_us_markets]      - S&P 500 / Dow / Nasdaq cards + a 12-stock mega-cap
+ *                         table with a Bullish/Neutral/Bearish signal, each
+ *                         row linking into [mp_analyzer] on the same page.
+ *  [mp_us_markets_faq]  - accordion FAQ + FAQPage schema for the US page.
+ * ==========================================================================*/
+
+add_shortcode('mp_us_markets', function ($atts) {
+    $idxRows = mp_md_tb_us_index_rows(); // [S&P 500, Dow, Nasdaq, Bitcoin] shaped {sym,price,chgPct,change}
+    $nmW = array('^GSPC' => 'S&P 500', '^DJI' => 'Dow Jones', '^IXIC' => 'Nasdaq');
+    $spxChg = null;
+    $cards = array();
+    foreach ($idxRows as $r) {
+        if (!isset($nmW[$r['sym']])) continue; // skip bitcoin here, the ticker already covers crypto
+        $cards[] = array('label' => $nmW[$r['sym']], 'price' => $r['price'], 'chg' => $r['chgPct']);
+        if ($r['sym'] === '^GSPC') $spxChg = $r['chgPct'];
+    }
+
+    $stocks = mp_md_us_stocks('trending');
+    foreach ($stocks as &$s) {
+        list($sig, ) = mp_md_screener_signal(isset($s['change_pct']) ? $s['change_pct'] : null, $spxChg, null, null);
+        $s['sig'] = $sig;
+    }
+    unset($s);
+
+    $base = get_permalink();
+    ob_start(); ?>
+<div class="mp-usm" id="mpUsMarkets" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/markets?filter=trending&session=us')); ?>">
+  <div class="mp-usm__idx" data-role="idx">
+    <?php if ($cards) : foreach ($cards as $c) : $up = ($c['chg'] ?? 0) >= 0; ?>
+    <div class="mp-usm__card">
+      <h4><?php echo esc_html($c['label']); ?></h4>
+      <div class="v"><?php echo $c['price'] !== null ? number_format($c['price'], 2) : '&mdash;'; ?></div>
+      <?php if ($c['chg'] !== null) : ?><div class="mp-usm__chg <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $up ? '&#9650;' : '&#9660;'; ?> <?php echo ($up ? '+' : '') . number_format($c['chg'], 2); ?>%</div><?php endif; ?>
+    </div>
+    <?php endforeach; else : ?><div class="mp-usm__card">Loading&hellip;</div><?php endif; ?>
+  </div>
+
+  <table class="mp-usm__tbl" data-role="tbl">
+    <thead><tr><th>Stock</th><th>Price</th><th>Change</th><th>Signal</th><th></th></tr></thead>
+    <tbody data-role="tbody">
+      <?php if ($stocks) : foreach ($stocks as $s) :
+        $up = (isset($s['change_pct']) ? $s['change_pct'] : 0) >= 0;
+        $sigCls = $s['sig'] === 'Bullish' ? 'bull' : ($s['sig'] === 'Bearish' ? 'bear' : 'neut');
+        $qurl = esc_url(add_query_arg('q', $s['symbol'], $base));
+      ?>
+      <tr>
+        <td><a href="<?php echo $qurl; ?>"><b><?php echo esc_html($s['symbol']); ?></b> <span class="mp-usm__nm"><?php echo esc_html($s['name']); ?></span></a></td>
+        <td class="num">$<?php echo number_format($s['price'], 2); ?></td>
+        <td class="num <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $up ? '&#9650;' : '&#9660;'; ?> <?php echo ($up ? '+' : '') . number_format(isset($s['change_pct']) ? $s['change_pct'] : 0, 2); ?>%</td>
+        <td><span class="mp-usm__sig <?php echo $sigCls; ?>"><?php echo esc_html($s['sig']); ?></span></td>
+        <td><a class="mp-usm__go" href="<?php echo $qurl; ?>">Analyse &rarr;</a></td>
+      </tr>
+      <?php endforeach; else : ?><tr><td colspan="5">Loading&hellip;</td></tr><?php endif; ?>
+    </tbody>
+  </table>
+  <p class="mp-usm__note">Prices in USD, may be delayed. Signal is a mechanical read of the day's move versus the S&amp;P 500 &mdash; not a buy/sell recommendation. Click any stock for the full trend, momentum and scenario analysis. Not investment advice.</p>
+</div>
+<style id="mp-usm-css">
+.mp-usm{margin:18px 0}
+.mp-usm__idx{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.mp-usm__card{border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:14px 16px;background:var(--mp-surface,#fff)}
+.mp-usm__card h4{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-usm__card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.mp-usm__chg{font-size:13px;font-weight:700;margin-top:4px}
+.mp-usm__chg.up{color:#16a34a}.mp-usm__chg.dn{color:#dc2626}
+.mp-usm__tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.mp-usm__tbl th,.mp-usm__tbl td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--mp-border,#eef1f4)}
+.mp-usm__tbl th.num,.mp-usm__tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.mp-usm__tbl td.num.up{color:#16a34a}.mp-usm__tbl td.num.dn{color:#dc2626}
+.mp-usm__tbl a{color:inherit;text-decoration:none}
+.mp-usm__tbl a:hover b{color:var(--mp-brand,#0057ff)}
+.mp-usm__nm{display:block;font-size:11.5px;color:var(--mp-muted,#64748b);font-weight:400}
+.mp-usm__sig{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.mp-usm__sig.bull{background:rgba(22,163,74,.12);color:#16a34a}
+.mp-usm__sig.bear{background:rgba(220,38,38,.12);color:#dc2626}
+.mp-usm__sig.neut{background:rgba(100,116,139,.12);color:#64748b}
+.mp-usm__go{font-size:12px;font-weight:600;color:var(--mp-brand,#0057ff);white-space:nowrap}
+.mp-usm__note{font-size:11px;color:var(--mp-muted,#64748b);margin-top:10px}
+html[data-theme="dark"] .mp-usm__card{background:#111827;border-color:rgba(255,255,255,.08)}
+@media(max-width:640px){.mp-usm__nm{display:none}.mp-usm__tbl th:nth-child(2),.mp-usm__tbl td:nth-child(2){display:none}}
+</style>
+<script>
+(function(){
+  var W=document.getElementById('mpUsMarkets'); if(!W) return;
+  function num(n,d){ return Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}); }
+  function paint(d){
+    var idx=W.querySelector('[data-role=idx]'), body=W.querySelector('[data-role=tbody]');
+    var NMW={'^GSPC':'S&P 500','^DJI':'Dow Jones','^IXIC':'Nasdaq'};
+    var spx=null;
+    var ih='';
+    (d.indices||[]).forEach(function(r){
+      if(!NMW[r.sym]) return;
+      if(r.sym==='^GSPC') spx=r.chgPct;
+      var up=(r.chgPct||0)>=0;
+      ih+='<div class="mp-usm__card"><h4>'+NMW[r.sym]+'</h4><div class="v">'+(r.price!=null?num(r.price,2):'—')+'</div>'
+        +(r.chgPct!=null?'<div class="mp-usm__chg '+(up?'up':'dn')+'">'+(up?'▲':'▼')+' '+(up?'+':'')+num(r.chgPct,2)+'%</div>':'')+'</div>';
+    });
+    if(ih && idx) idx.innerHTML=ih;
+    var bh='';
+    (d.stocks||[]).forEach(function(s){
+      var chg=s.change_pct!=null?s.change_pct:s.chgPct;
+      var up=(chg||0)>=0;
+      var sc=0;
+      if(chg!=null) sc+=(chg>=1?1:0)-(chg<=-1?1:0);
+      if(chg!=null && spx!=null){ var rel=chg-spx; sc+=(rel>=0.75?1:0)-(rel<=-0.75?1:0); }
+      var sig=sc>=2?'Bullish':(sc<=-2?'Bearish':'Neutral');
+      var sigCls=sig==='Bullish'?'bull':(sig==='Bearish'?'bear':'neut');
+      var q=<?php echo wp_json_encode(esc_url_raw($base)); ?>+'?q='+encodeURIComponent(s.symbol||s.sym);
+      bh+='<tr><td><a href="'+q+'"><b>'+(s.symbol||s.sym)+'</b> <span class="mp-usm__nm">'+(s.name||'')+'</span></a></td>'
+        +'<td class="num">$'+num(s.price,2)+'</td>'
+        +'<td class="num '+(up?'up':'dn')+'">'+(up?'▲':'▼')+' '+(up?'+':'')+num(chg||0,2)+'%</td>'
+        +'<td><span class="mp-usm__sig '+sigCls+'">'+sig+'</span></td>'
+        +'<td><a class="mp-usm__go" href="'+q+'">Analyse →</a></td></tr>';
+    });
+    if(bh && body) body.innerHTML=bh;
+  }
+  function load(){
+    fetch(W.getAttribute('data-endpoint'),{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d) paint(d); }).catch(function(){});
+  }
+  setTimeout(load,1500);
+  setInterval(load,45000);
+}());
+</script>
+    <?php
+    return ob_get_clean();
+});
+
+/* --------------------------- [mp_us_markets_faq] --------------------------- */
+add_shortcode('mp_us_markets_faq', function () {
+    $idxRows = mp_md_tb_us_index_rows();
+    $spx = null;
+    foreach ($idxRows as $r) if ($r['sym'] === '^GSPC') $spx = $r;
+    $today = wp_date('j M Y');
+    $live = $spx && isset($spx['price'])
+        ? 'As of ' . $today . ', the S&amp;P 500 is around ' . number_format($spx['price'], 2) . (isset($spx['chgPct']) && $spx['chgPct'] !== null ? ' (' . ($spx['chgPct'] >= 0 ? '+' : '') . number_format($spx['chgPct'], 2) . '% today)' : '') . '. It updates live during the US trading session.'
+        : 'The US market page updates live during the US trading session; see the figures above.';
+
+    $faq = array(
+        array('Is the US stock market open today?', 'US markets (NYSE and Nasdaq) trade Monday to Friday, 9:30am&ndash;4:00pm US Eastern Time &mdash; roughly 7:00pm&ndash;1:30am India Standard Time (adjusts with US daylight saving). Outside those hours the page shows the last close.'),
+        array('Where does the S&P 500 stand today?', $live),
+        array('What is the difference between the S&P 500, Dow Jones and Nasdaq?', 'The S&amp;P 500 tracks 500 large US companies and is the broadest read of the US market. The Dow Jones Industrial Average tracks 30 large "blue-chip" companies. The Nasdaq Composite is weighted toward technology and growth stocks, so it tends to move more than the other two.'),
+        array('Which US stocks does this page track?', 'A curated set of US mega-caps &mdash; Apple, Microsoft, Alphabet (Google), Amazon, Nvidia, Meta, Tesla, JPMorgan Chase, Visa, Walmart, ExxonMobil and UnitedHealth &mdash; covering technology, financials, retail, energy and healthcare.'),
+        array('What does the Bullish / Neutral / Bearish signal mean?', 'It is a mechanical read of the day\'s price move: a stock scores +1 for a move of 1% or more, and another +1 for beating the S&amp;P 500\'s move by 0.75 points or more (the reverse for a fall). A combined score of +2 or higher shows as Bullish, &minus;2 or lower as Bearish, in between as Neutral. It is not a buy or sell recommendation.'),
+        array('Can I get a full trend and scenario analysis for a US stock?', 'Yes &mdash; click any stock (or search it at the top of this page) for the full MoneyPuran Analyzer: trend, momentum, volume, key levels, and Bullish/Neutral/Bearish scenarios with a confidence score, the same engine used for Indian stocks.'),
+    );
+    ob_start(); ?>
+<div class="mp-rates-faq">
+  <h2>US stock market today &mdash; FAQ</h2>
+  <?php foreach ($faq as $i => $f) : ?>
+  <details<?php echo $i === 0 ? ' open' : ''; ?>><summary><?php echo esc_html($f[0]); ?></summary><div><?php echo wp_kses_post(wpautop($f[1])); ?></div></details>
+  <?php endforeach; ?>
+</div>
+<script type="application/ld+json"><?php echo wp_json_encode(array(
+    '@context' => 'https://schema.org', '@type' => 'FAQPage',
+    'mainEntity' => array_map(function ($f) {
+        return array('@type' => 'Question', 'name' => wp_strip_all_tags($f[0]),
+            'acceptedAnswer' => array('@type' => 'Answer', 'text' => wp_strip_all_tags($f[1])));
+    }, $faq),
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?></script>
+    <?php
+    return ob_get_clean();
+});
+
+/* SEO title / description for the US markets page. */
+add_filter('rank_math/frontend/title', function ($title) {
+    if (is_page('us-markets')) return 'US Stock Market Today &mdash; S&P 500, Dow, Nasdaq Live + Top Stocks';
+    return $title;
+}, 21);
+add_filter('rank_math/frontend/description', function ($desc) {
+    if (is_page('us-markets')) return 'US stock market today: live S&P 500, Dow Jones and Nasdaq levels, top US mega-cap stocks (Apple, Microsoft, Tesla, Nvidia and more) with a Bullish/Neutral/Bearish signal, and a full trend and scenario analysis for any US stock.';
+    return $desc;
+}, 21);
