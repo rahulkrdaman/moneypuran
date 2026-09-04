@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.14.0
+ * Version: 1.15.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1071,6 +1071,64 @@ function mp_md_render_ticker() {
 }
 add_action('mp_news_ticker', 'mp_md_render_ticker');
 add_shortcode('mp_news_ticker', function () { ob_start(); mp_md_render_ticker(); return ob_get_clean(); });
+
+/* ============================================================================
+ * Evergreen tool pages carry live data but the theme prints their (frozen)
+ * publish date. Show today's date instead, and keep post_modified fresh so the
+ * sitemap <lastmod> and schema dateModified track that the data is current.
+ * ==========================================================================*/
+function mp_md_evergreen_page_ids() {
+    $ids = get_transient('mp_md_evergreen_ids');
+    if (is_array($ids)) return $ids;
+    $slugs = array(
+        'stock-analysis', 'gold-rates', 'fuel-prices', 'commodities', 'charts', 'fii-dii-data',
+        'why-market-moved-today', 'india-market-today', 'nifty-50', 'sensex', 'bank-nifty',
+        'stocks', 'sector', 'top-gainers-today', 'top-losers-today',
+        '52-week-high-stocks', '52-week-low-stocks',
+    );
+    $ids = array();
+    foreach ($slugs as $s) {
+        $p = get_page_by_path($s);
+        if ($p) $ids[] = (int) $p->ID;
+    }
+    $hub = get_page_by_path('stocks'); // per-stock + sector child pages
+    if ($hub) {
+        $kids = get_posts(array('post_type' => 'page', 'post_parent' => $hub->ID, 'numberposts' => -1, 'fields' => 'ids', 'post_status' => 'publish'));
+        foreach ($kids as $k) {
+            $ids[] = (int) $k;
+            $gk = get_posts(array('post_type' => 'page', 'post_parent' => $k, 'numberposts' => -1, 'fields' => 'ids', 'post_status' => 'publish'));
+            foreach ($gk as $g) $ids[] = (int) $g;
+        }
+    }
+    $ids = array_values(array_unique(array_filter($ids)));
+    set_transient('mp_md_evergreen_ids', $ids, DAY_IN_SECONDS);
+    return $ids;
+}
+function mp_md_is_evergreen_page($post) {
+    if (!$post) return false;
+    $pid = is_object($post) ? (int) $post->ID : (int) $post;
+    return $pid && in_array($pid, mp_md_evergreen_page_ids(), true);
+}
+add_filter('get_the_date', function ($the_date, $format, $post) {
+    return mp_md_is_evergreen_page($post) ? wp_date($format ?: get_option('date_format')) : $the_date;
+}, 10, 3);
+add_filter('get_the_modified_date', function ($the_date, $format, $post) {
+    return mp_md_is_evergreen_page($post) ? wp_date($format ?: get_option('date_format')) : $the_date;
+}, 10, 3);
+
+add_action('mp_md_daily_touch', function () {
+    global $wpdb;
+    $now = current_time('mysql');
+    $gmt = current_time('mysql', true);
+    foreach (mp_md_evergreen_page_ids() as $pid) {
+        $wpdb->update($wpdb->posts, array('post_modified' => $now, 'post_modified_gmt' => $gmt), array('ID' => $pid));
+        clean_post_cache($pid);
+    }
+    delete_transient('mp_md_evergreen_ids');
+});
+if (!wp_next_scheduled('mp_md_daily_touch')) {
+    wp_schedule_event(time() + 300, 'daily', 'mp_md_daily_touch');
+}
 
 /* ============================================================================
  * [mp_ticker_block] - a two-row strip placed below the header (front page):
