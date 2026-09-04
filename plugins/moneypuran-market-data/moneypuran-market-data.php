@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.16.0
+ * Version: 1.17.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1131,10 +1131,23 @@ if (!wp_next_scheduled('mp_md_daily_touch')) {
 }
 
 /* ============================================================================
- * [mp_hero_slider count="4"] - full-width carousel of the newest posts, one
- * slide visible at a time, auto-advancing. Server-rendered (slide 1 shows at
- * rest), no library. Honours prefers-reduced-motion.
+ * [mp_hero_slider count="4"] - carousel of the newest posts (left) + a "Most
+ * Used" quick-tools panel (right). One slide at a time, auto-advancing.
+ * Server-rendered (slide 1 shows at rest), no library, reduced-motion aware.
  * ==========================================================================*/
+function mp_md_quick_tools() {
+    return apply_filters('mp_quick_tools', array(
+        'Stock Analysis'    => '/stock-analysis/',
+        'Gold Rate Today'   => '/gold-rates/',
+        'Fuel Prices'       => '/fuel-prices/',
+        'Commodities'       => '/commodities/',
+        'Live Charts'       => '/charts/',
+        'FII / DII'         => '/fii-dii-data/',
+        'Nifty 50'          => '/nifty-50/',
+        'Top Gainers'       => '/top-gainers-today/',
+        'Why Market Moved'  => '/why-market-moved-today/',
+    ));
+}
 add_shortcode('mp_hero_slider', function ($atts) {
     $a = shortcode_atts(array('count' => 4), $atts);
     $n = max(2, min(8, (int) $a['count']));
@@ -1143,6 +1156,7 @@ add_shortcode('mp_hero_slider', function ($atts) {
     $total = count($posts);
 
     ob_start(); ?>
+<div class="mp-hsrow">
 <section class="mp-hs" id="mpHs" aria-roledescription="carousel" aria-label="Latest stories">
   <div class="mp-hs__viewport"><div class="mp-hs__track" id="mpHsTrack">
     <?php foreach ($posts as $i => $p) :
@@ -1173,11 +1187,25 @@ add_shortcode('mp_hero_slider', function ($atts) {
     <?php endfor; ?>
   </div>
 </section>
+<aside class="mp-hs-tools" aria-label="Most used tools">
+  <h3 class="mp-hs-tools__h">Most Used</h3>
+  <?php foreach (mp_md_quick_tools() as $label => $path) : ?>
+  <a href="<?php echo esc_url(home_url($path)); ?>"><?php echo esc_html($label); ?></a>
+  <?php endforeach; ?>
+</aside>
+</div>
 <style id="mp-hs-css">
-.mp-hs{position:relative;margin:14px 0 26px;border-radius:14px;overflow:hidden;background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08))}
+.mp-hsrow{display:grid;grid-template-columns:minmax(0,1fr) 288px;gap:16px;margin:14px 0 26px}
+.mp-hs{position:relative;margin:0;border-radius:14px;overflow:hidden;background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08))}
+.mp-hs-tools{background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08));border-radius:14px;padding:10px;display:flex;flex-direction:column;align-content:start}
+.mp-hs-tools__h{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--mp-muted,#94a3b8);margin:6px 8px 6px}
+.mp-hs-tools a{display:flex;align-items:center;padding:9px 10px;font-size:13.5px;font-weight:600;color:var(--mp-ink2,#cbd5e1);border-radius:8px;text-decoration:none;transition:background .14s,color .14s}
+.mp-hs-tools a:hover{background:var(--mp-brand-lt,rgba(0,87,255,.12));color:var(--mp-brand,#0057ff)}
+@media(max-width:900px){.mp-hsrow{grid-template-columns:1fr}
+  .mp-hs-tools{flex-direction:row;flex-wrap:wrap;gap:2px 4px}.mp-hs-tools__h{flex:1 0 100%}.mp-hs-tools a{flex:0 0 auto;padding:8px 10px}}
 .mp-hs__viewport{overflow:hidden}
 .mp-hs__track{display:flex;transition:transform .55s cubic-bezier(.4,0,.2,1);will-change:transform}
-.mp-hs__slide{flex:0 0 100%;position:relative;min-height:clamp(240px,40vw,400px)}
+.mp-hs__slide{flex:0 0 100%;position:relative;min-height:clamp(240px,33vw,380px)}
 .mp-hs__link{display:block;position:absolute;inset:0;text-decoration:none;color:#fff}
 .mp-hs__img{position:absolute;inset:0;background-size:cover;background-position:center;transform:scale(1.02)}
 .mp-hs__shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,10,20,.15) 0%,rgba(6,10,20,.25) 45%,rgba(6,10,20,.88) 100%)}
