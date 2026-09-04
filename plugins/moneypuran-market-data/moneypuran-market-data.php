@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.24.1
+ * Version: 1.24.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1221,14 +1221,18 @@ add_shortcode('mp_hero_slider', function ($atts) {
 <style id="mp-hs-css">
 .mp-hsrow{display:grid;grid-template-columns:minmax(0,1fr) 288px;gap:16px;margin:14px 0 26px}
 .mp-hs{position:relative;margin:0;border-radius:14px;overflow:hidden;background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08))}
-.mp-hs-tools{background:var(--mp-surface2,#1e293b);border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:8px 10px 10px;display:flex;flex-direction:column;align-content:start;box-shadow:0 1px 3px rgba(2,6,23,.06)}
+.mp-hs-tools{background:var(--mp-surface2,#1e293b);border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:8px 10px 10px;display:flex;flex-direction:column;align-content:start;box-shadow:0 1px 3px rgba(2,6,23,.06);max-height:clamp(240px,33vw,380px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.45) transparent}
+.mp-hs-tools::-webkit-scrollbar{width:6px}
+.mp-hs-tools::-webkit-scrollbar-track{background:transparent}
+.mp-hs-tools::-webkit-scrollbar-thumb{background:rgba(148,163,184,.45);border-radius:3px}
+.mp-hs-tools::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.7)}
 html:not([data-theme="dark"]) .mp-hs-tools{background:#fff}
-.mp-hs-tools__h{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--mp-muted,#94a3b8);margin:6px 6px;padding-bottom:8px;border-bottom:1px solid var(--mp-border,#e2e8f0)}
+.mp-hs-tools__h{position:sticky;top:0;background:inherit;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--mp-muted,#94a3b8);margin:6px 6px;padding-bottom:8px;border-bottom:1px solid var(--mp-border,#e2e8f0)}
 .mp-hs-tools a{display:flex;align-items:center;padding:10px 8px;font-size:13.5px;font-weight:600;color:var(--mp-ink2,#cbd5e1);border-radius:8px;text-decoration:none;transition:background .14s,color .14s}
 .mp-hs-tools a+a{border-top:1px solid var(--mp-border,rgba(148,163,184,.14))}
 .mp-hs-tools a:hover{background:var(--mp-brand-lt,rgba(0,87,255,.12));color:var(--mp-brand,#0057ff)}
 @media(max-width:900px){.mp-hsrow{grid-template-columns:1fr}
-  .mp-hs-tools{flex-direction:row;flex-wrap:wrap;gap:2px 4px}.mp-hs-tools__h{flex:1 0 100%;border-bottom:0;padding-bottom:0}.mp-hs-tools a{flex:0 0 auto;padding:8px 10px}.mp-hs-tools a+a{border-top:0}}
+  .mp-hs-tools{flex-direction:row;flex-wrap:wrap;gap:2px 4px;max-height:none;overflow-y:visible}.mp-hs-tools__h{flex:1 0 100%;border-bottom:0;padding-bottom:0;position:static}.mp-hs-tools a{flex:0 0 auto;padding:8px 10px}.mp-hs-tools a+a{border-top:0}}
 .mp-hs__viewport{overflow:hidden}
 .mp-hs__track{display:flex;transition:transform .55s cubic-bezier(.4,0,.2,1);will-change:transform}
 .mp-hs__slide{flex:0 0 100%;position:relative;min-height:clamp(240px,33vw,380px)}
