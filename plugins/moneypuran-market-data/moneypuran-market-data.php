@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.24.2
+ * Version: 1.24.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -5791,7 +5791,7 @@ function mp_an_view_class($v) {
 }
 
 add_shortcode('mp_analyzer', function ($atts) {
-    $atts = shortcode_atts(array('symbol' => '', 'mode' => '', 'search' => '', 'related' => ''), $atts);
+    $atts = shortcode_atts(array('symbol' => '', 'mode' => '', 'search' => '', 'related' => '', 'chips' => '', 'placeholder' => ''), $atts);
     $q = isset($_GET['q']) ? sanitize_text_field(wp_unslash($_GET['q'])) : '';
     $symbol = $atts['symbol'] !== '' ? $atts['symbol'] : $q;
     if ($symbol !== '') $symbol = mp_an_resolve_query($symbol);
@@ -5802,14 +5802,14 @@ add_shortcode('mp_analyzer', function ($atts) {
     echo mp_an_ui_css();
 
     if ($symbol === '') {
-        echo mp_an_search_hero();
+        echo mp_an_search_hero($atts['chips'], $atts['placeholder']);
         return ob_get_clean();
     }
 
     $a = mp_an_analyze($symbol, $mode);
 
     if (empty($a['ok'])) {
-        echo '<div class="mp-az mp-az--err">' . mp_an_search_hero()
+        echo '<div class="mp-az mp-az--err">' . mp_an_search_hero($atts['chips'], $atts['placeholder'])
             . '<p class="mp-az__err">' . esc_html($a['reason'] ?? 'Could not analyse that symbol. Try an exact NSE symbol like RELIANCE or an index like NIFTY.') . '</p></div>';
         return ob_get_clean();
     }
@@ -5956,12 +5956,13 @@ add_shortcode('mp_analyzer', function ($atts) {
     return ob_get_clean();
 });
 
-function mp_an_search_hero() {
-    $ex = array('RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'NIFTY', 'BANKNIFTY');
+function mp_an_search_hero($chips = null, $placeholder = null) {
+    $ex = $chips ? array_filter(array_map('trim', explode(',', $chips))) : array('RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'NIFTY', 'BANKNIFTY');
+    $ph = $placeholder ? $placeholder : 'Enter a stock or index — e.g. RELIANCE, NIFTY';
     ob_start(); ?>
 <div class="mp-az-hero">
   <form class="mp-az-search" method="get" action="">
-    <input type="text" name="q" placeholder="Enter a stock or index &mdash; e.g. RELIANCE, NIFTY" autocomplete="off" required>
+    <input type="text" name="q" placeholder="<?php echo esc_attr($ph); ?>" autocomplete="off" required>
     <button type="submit">Analyze</button>
   </form>
   <div class="mp-az-ex">
