@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.21.0
+ * Version: 1.22.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -206,14 +206,24 @@ function mp_md_build_groups() {
         if ($r['sym'] === 'GC=F') $gold = $r;
         if ($r['sym'] === 'SI=F') $silver = $r;
     }
+    $fxRow = null;
+    foreach (($out['currencies'] ?? array()) as $r) { if ($r['sym'] === 'INR=X') $fxRow = $r; }
     if ($usdinr && $gold) {
         $g10 = $gold['price'] / 31.1035 * $usdinr * 10; // $/oz -> INR/10g (24K)
+        // Day change of the INR rate ~= combine the metal's % move with the rupee's % move.
+        $fxPct = ($fxRow && isset($fxRow['chgPct']) && $fxRow['chgPct'] !== null) ? (float) $fxRow['chgPct'] : 0.0;
+        $comb  = function ($mPct) use ($fxPct) {
+            if ($mPct === null) return null;
+            return round(((1 + $mPct / 100) * (1 + $fxPct / 100) - 1) * 100, 2);
+        };
         $out['bullion_inr'] = array(
             'usdinr'      => round($usdinr, 2),
             'gold_24k_10g' => round($g10),
             'gold_22k_10g' => round($g10 * 0.916),
             'gold_18k_10g' => round($g10 * 0.75),
             'silver_kg'   => $silver ? round($silver['price'] / 31.1035 * $usdinr * 1000) : null,
+            'gold_chg_pct'   => $comb(isset($gold['chgPct']) ? $gold['chgPct'] : null),
+            'silver_chg_pct' => $silver ? $comb(isset($silver['chgPct']) ? $silver['chgPct'] : null) : null,
             'note'        => 'Indicative, from COMEX spot x USD/INR. Excludes GST, import duty and jeweller making charges. Not a retail quote.',
         );
     }
@@ -1493,12 +1503,17 @@ function mp_rates_gold($city = 'Mumbai') {
     $g24_10 = $b['gold_24k_10g'] * $mult + $prem;
     $s_kg   = $b['silver_kg'] ? $b['silver_kg'] * $mult : null;
 
+    $gpct = isset($b['gold_chg_pct'])   ? $b['gold_chg_pct']   : null;
+    $spct = isset($b['silver_chg_pct']) ? $b['silver_chg_pct'] : null;
+
     return array(
         'city'      => $city,
         'gold_24k'  => array('g' => round($g24_10 / 10), 'ten_g' => round($g24_10)),
         'gold_22k'  => array('g' => round($g24_10 * 0.916 / 10), 'ten_g' => round($g24_10 * 0.916)),
         'gold_18k'  => array('g' => round($g24_10 * 0.75 / 10), 'ten_g' => round($g24_10 * 0.75)),
-        'silver'    => $s_kg ? array('g' => round($s_kg / 1000, 2), 'kg' => round($s_kg)) : null,
+        'silver'    => $s_kg ? array('g' => round($s_kg / 1000, 2), 'kg' => round($s_kg), 'chg_pct' => $spct) : null,
+        'chg_pct'   => $gpct,
+        'silver_chg_pct' => $spct,
         'asOf'      => isset($grp['asOf']) ? $grp['asOf'] : gmdate('c'),
         'note'      => 'Indicative India reference — international price adjusted for import duty and GST. Local jeweller rates vary by purity, making charges and hallmarking; confirm before buying.',
     );
@@ -1569,6 +1584,7 @@ add_action('rest_api_init', function () {
             $type = $req->get_param('type');
             $body = array('city' => $city, 'cities' => mp_rates_cities());
             if ($type === 'gold' || $type === 'all') $body['gold'] = mp_rates_gold($city);
+            if ($type === 'silver' || $type === 'all') $body['silver'] = mp_rates_silver($city);
             if ($type === 'fuel' || $type === 'all') $body['fuel'] = mp_rates_fuel($city);
             $resp = rest_ensure_response($body);
             $resp->header('Cache-Control', 'public, max-age=120, s-maxage=300, stale-while-revalidate=600');
@@ -1610,6 +1626,9 @@ function mp_rates_print_assets() {
 .mp-rate-card h4{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
 .mp-rate-card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
 .mp-rate-card .u{font-size:12px;color:var(--mp-muted,#64748b)}
+.mp-rate-card__chg{display:inline-flex;align-items:center;gap:4px;margin-top:6px;font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.mp-rate-card__chg small{font-weight:500;color:var(--mp-muted,#64748b)}
+.mp-rate-card__chg.up{color:#16a34a}.mp-rate-card__chg.dn{color:#dc2626}.mp-rate-card__chg.flat{color:var(--mp-muted,#64748b)}
 .mp-rates__calc{margin-top:18px;border:1px solid var(--mp-border,#e5e7eb);border-radius:10px;padding:16px;background:var(--mp-surface,#fff)}
 .mp-rates__calc h4{margin:0 0 12px}
 .mp-rates__row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:12px}
@@ -1628,6 +1647,16 @@ html[data-theme="dark"] .mp-rate-card,html[data-theme="dark"] .mp-rates__calc{ba
 html[data-theme="dark"] .mp-rates__row input,html[data-theme="dark"] .mp-rates__row select,html[data-theme="dark"] .mp-rates__bar select{background:#0a0f1e;border-color:rgba(255,255,255,.12);color:#f1f5f9}
 </style>
     <?php
+}
+
+/* "▲ +0.42% today" badge for a rate card, from a day-change percent. */
+function mp_rates_chg_html($pct, $when = 'today') {
+    if ($pct === null || $pct === '') return '';
+    $p = (float) $pct;
+    $cls = $p > 0.02 ? 'up' : ($p < -0.02 ? 'dn' : 'flat');
+    $arrow = $p > 0.02 ? '&#9650;' : ($p < -0.02 ? '&#9660;' : '&#8226;');
+    $sign = $p > 0 ? '+' : '';
+    return '<div class="mp-rate-card__chg ' . $cls . '">' . $arrow . ' ' . $sign . number_format($p, 2) . '% <small>' . esc_html($when) . '</small></div>';
 }
 
 /* Geo/city helpers - emitted inline by each rate shortcode (before its IIFE). */
@@ -1654,11 +1683,13 @@ add_shortcode('mp_gold_rates', function ($atts) {
     <?php if ($g) : foreach (array('24k'=>'24K (999)','22k'=>'22K (916)','18k'=>'18K (750)') as $k=>$lbl): $row=$g['gold_'.$k]; ?>
       <div class="mp-rate-card"><h4><?php echo esc_html($lbl); ?> Gold</h4>
         <div class="v">₹<?php echo number_format($row['g']); ?><span class="u">/g</span></div>
-        <div class="u">₹<?php echo number_format($row['ten_g']); ?> / 10g</div></div>
+        <div class="u">₹<?php echo number_format($row['ten_g']); ?> / 10g</div>
+        <?php echo mp_rates_chg_html(isset($g['chg_pct']) ? $g['chg_pct'] : null); ?></div>
     <?php endforeach; if (!empty($g['silver'])): ?>
       <div class="mp-rate-card"><h4>Silver (999)</h4>
         <div class="v">₹<?php echo number_format($g['silver']['g'], 2); ?><span class="u">/g</span></div>
-        <div class="u">₹<?php echo number_format($g['silver']['kg']); ?> / kg</div></div>
+        <div class="u">₹<?php echo number_format($g['silver']['kg']); ?> / kg</div>
+        <?php echo mp_rates_chg_html(isset($g['silver']['chg_pct']) ? $g['silver']['chg_pct'] : null); ?></div>
     <?php endif; else: ?><div class="mp-rate-card">Rates loading…</div><?php endif; ?>
   </div>
 
@@ -1696,6 +1727,11 @@ add_shortcode('mp_gold_rates', function ($atts) {
   var G = null;
   var sel = W.querySelector('.mp-rates__city');
   function fmt(n){ return '₹' + Math.round(n).toLocaleString('en-IN'); }
+  function chgHtml(p){
+    if(p===null||p===undefined||p==='') return '';
+    p=Number(p); var c=p>0.02?'up':(p<-0.02?'dn':'flat'), a=p>0.02?'▲':(p<-0.02?'▼':'•');
+    return '<div class="mp-rate-card__chg '+c+'">'+a+' '+(p>0?'+':'')+p.toFixed(2)+'% <small>today</small></div>';
+  }
   function perG(){
     var p = W.querySelector('[data-role=purity] .on').getAttribute('data-p');
     if (G) return G['gold_'+p].g;
@@ -1729,9 +1765,9 @@ add_shortcode('mp_gold_rates', function ($atts) {
     var C = W.querySelector('[data-role=cards]'), h = '';
     [['24k','24K (999)'],['22k','22K (916)'],['18k','18K (750)']].forEach(function(x){
       var r = G['gold_'+x[0]];
-      h += '<div class="mp-rate-card"><h4>'+x[1]+' Gold</h4><div class="v">₹'+r.g.toLocaleString('en-IN')+'<span class="u">/g</span></div><div class="u">₹'+r.ten_g.toLocaleString('en-IN')+' / 10g</div></div>';
+      h += '<div class="mp-rate-card"><h4>'+x[1]+' Gold</h4><div class="v">₹'+r.g.toLocaleString('en-IN')+'<span class="u">/g</span></div><div class="u">₹'+r.ten_g.toLocaleString('en-IN')+' / 10g</div>'+chgHtml(G.chg_pct)+'</div>';
     });
-    if(G.silver) h += '<div class="mp-rate-card"><h4>Silver (999)</h4><div class="v">₹'+G.silver.g.toLocaleString('en-IN')+'<span class="u">/g</span></div><div class="u">₹'+G.silver.kg.toLocaleString('en-IN')+' / kg</div></div>';
+    if(G.silver) h += '<div class="mp-rate-card"><h4>Silver (999)</h4><div class="v">₹'+G.silver.g.toLocaleString('en-IN')+'<span class="u">/g</span></div><div class="u">₹'+G.silver.kg.toLocaleString('en-IN')+' / kg</div>'+chgHtml(G.silver.chg_pct)+'</div>';
     C.innerHTML = h;
     var nt = W.querySelector('[data-role=note]'); if(nt) nt.textContent = G.note + ' Not investment advice.';
     calc();
@@ -1842,6 +1878,246 @@ add_shortcode('mp_fuel_prices', function ($atts) {
     <?php
     return mp_rates_helpers_html() . ob_get_clean();
 });
+
+
+/* --------------------------- Silver rate (v1.22.0) --------------------------- */
+function mp_rates_silver($city = 'Mumbai') {
+    $grp = get_transient(MP_MD_GRP_KEY);
+    $b   = is_array($grp) && !empty($grp['bullion_inr']) ? $grp['bullion_inr'] : null;
+    if (!$b || empty($b['silver_kg'])) return null;
+
+    $mult = (float) apply_filters('mp_silver_india_multiplier', (float) apply_filters('mp_gold_india_multiplier', 1.13));
+    $premiums = (array) apply_filters('mp_silver_city_premium', array());
+    $prem = isset($premiums[$city]) ? (float) $premiums[$city] : 0.0;
+    $kg = $b['silver_kg'] * $mult + $prem;
+
+    return array(
+        'city'     => $city,
+        'per_g'    => round($kg / 1000, 2),
+        'per_10g'  => round($kg / 100, 1),
+        'per_100g' => round($kg / 10),
+        'per_kg'   => round($kg),
+        'chg_pct'  => isset($b['silver_chg_pct']) ? $b['silver_chg_pct'] : null,
+        'asOf'     => isset($grp['asOf']) ? $grp['asOf'] : gmdate('c'),
+        'note'     => 'Indicative India reference for 999 (fine) silver — the international price adjusted for import duty and GST. Local dealer and jeweller rates vary by purity, coin/bar premium and making charges; confirm before buying.',
+    );
+}
+
+/* --------------------------- [mp_silver_rate] --------------------------- */
+add_shortcode('mp_silver_rate', function ($atts) {
+    mp_rates_assets();
+    $city = mp_rates_norm_city($atts['city'] ?? (isset($_GET['city']) ? $_GET['city'] : 'Mumbai'));
+    $s = mp_rates_silver($city);
+    $opts = '';
+    foreach (mp_rates_cities() as $c) $opts .= '<option value="' . esc_attr($c) . '"' . selected($c, $city, false) . '>' . esc_html($c) . '</option>';
+    ob_start(); ?>
+<div class="mp-rates" id="mpSilverRate" data-endpoint="<?php echo esc_url(home_url('/wp-json/mp/v1/rates?type=silver')); ?>">
+  <div class="mp-rates__bar">
+    <select class="mp-rates__city" aria-label="Select city"><?php echo $opts; ?></select>
+    <button type="button" class="mp-rates__loc" data-role="geo">📍 Use my location</button>
+    <span class="mp-rates__asof">Updated <span data-role="asof"><?php echo $s ? esc_html(date('j M Y', strtotime($s['asOf']))) : '—'; ?></span></span>
+  </div>
+  <div class="mp-rates__cards" data-role="cards">
+    <?php if ($s) :
+      $cards = array(
+        array('1 gram', $s['per_g'], '', 2),
+        array('10 grams', $s['per_10g'], '', 1),
+        array('100 grams', $s['per_100g'], '', 0),
+        array('1 kilogram', $s['per_kg'], '', 0),
+      );
+      foreach ($cards as $c) : ?>
+      <div class="mp-rate-card"><h4>999 Silver &middot; <?php echo esc_html($c[0]); ?></h4>
+        <div class="v">₹<?php echo number_format($c[1], $c[3]); ?></div>
+        <div class="u"><?php echo esc_html($c[0]); ?></div>
+        <?php echo mp_rates_chg_html(isset($s['chg_pct']) ? $s['chg_pct'] : null); ?></div>
+    <?php endforeach; else : ?><div class="mp-rate-card">Rates loading…</div><?php endif; ?>
+  </div>
+
+  <div class="mp-rates__calc" data-role="calc">
+    <h4>Silver price calculator</h4>
+    <div class="mp-rates__row">
+      <div><label>Weight</label>
+        <span class="mp-rates__seg" data-role="unit">
+          <button type="button" data-u="1" class="on">grams</button>
+          <button type="button" data-u="1000">kg</button>
+        </span></div>
+      <div><label>Amount</label><input type="number" data-role="wt" value="100" min="0" step="1"></div>
+      <div><label>Making / premium (%)</label><input type="number" data-role="mk" value="5" min="0" step="1"></div>
+      <div><label>GST</label><select data-role="gst"><option value="1">Incl. 3% GST</option><option value="0">Exclude GST</option></select></div>
+    </div>
+    <div class="mp-rates__out">
+      <span>Silver value</span><span data-role="o-base">₹0</span>
+      <span>Making / premium</span><span data-role="o-make">₹0</span>
+      <span>GST (3%)</span><span data-role="o-gst">₹0</span>
+      <span class="tot">Total</span><span class="tot" data-role="o-tot">₹0</span>
+    </div>
+    <div class="mp-rates__row" style="margin-top:14px">
+      <div><label>Know your money's worth — enter ₹ amount</label>
+        <input type="number" data-role="amt" placeholder="10000" min="0" step="100"></div>
+      <div><label>You can buy</label><input type="text" data-role="amt-out" readonly value="—"></div>
+    </div>
+  </div>
+
+  <p class="mp-rates__disc" data-role="note"><?php echo $s ? esc_html($s['note']) : ''; ?> Not investment advice.</p>
+</div>
+<script>
+(function(){
+  var W = document.getElementById('mpSilverRate'); if(!W) return;
+  var S = null, sel = W.querySelector('.mp-rates__city');
+  function fmt(n){ return '₹' + Math.round(n).toLocaleString('en-IN'); }
+  function chgHtml(p){
+    if(p===null||p===undefined||p==='') return '';
+    p=Number(p); var c=p>0.02?'up':(p<-0.02?'dn':'flat'), a=p>0.02?'▲':(p<-0.02?'▼':'•');
+    return '<div class="mp-rate-card__chg '+c+'">'+a+' '+(p>0?'+':'')+p.toFixed(2)+'% <small>today</small></div>';
+  }
+  function perG(){
+    if(S) return S.per_g;
+    var card = W.querySelectorAll('[data-role=cards] .mp-rate-card')[0];
+    if(card){ var m=card.querySelector('.v'); if(m) return parseFloat(m.textContent.replace(/[^0-9.]/g,''))||0; }
+    return 0;
+  }
+  function calc(){
+    var u = parseFloat(W.querySelector('[data-role=unit] .on').getAttribute('data-u'))||1;
+    var wt = (parseFloat(W.querySelector('[data-role=wt]').value)||0) * u;
+    var mk = parseFloat(W.querySelector('[data-role=mk]').value)||0;
+    var incl = W.querySelector('[data-role=gst]').value === '1';
+    var base = perG()*wt, make = base*mk/100, sub = base+make, gst = incl ? sub*0.03 : 0;
+    W.querySelector('[data-role=o-base]').textContent = fmt(base);
+    W.querySelector('[data-role=o-make]').textContent = fmt(make);
+    W.querySelector('[data-role=o-gst]').textContent = fmt(gst);
+    W.querySelector('[data-role=o-tot]').textContent = fmt(sub+gst);
+    var amt = parseFloat(W.querySelector('[data-role=amt]').value)||0;
+    var eff = perG()*(1+mk/100)*(incl?1.03:1);
+    W.querySelector('[data-role=amt-out]').value = (amt && eff) ? (amt/eff).toFixed(1)+' g' : '—';
+  }
+  function setCityLabel(c){
+    var h1 = document.querySelector('.mp-primary h1, .entry-content h1, article h1, main h1') || document.querySelector('h1');
+    if (h1) h1.textContent = 'Silver Rate Today in ' + c;
+    try { document.title = 'Silver Rate Today in ' + c + ' | MoneyPuran'; } catch(e){}
+  }
+  function paint(d){
+    S = d.silver; if(!S) return;
+    setCityLabel(d.city);
+    W.querySelector('[data-role=asof]').textContent = new Date(S.asOf).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+    var rows = [['1 gram',S.per_g,2],['10 grams',S.per_10g,1],['100 grams',S.per_100g,0],['1 kilogram',S.per_kg,0]];
+    var h = rows.map(function(r){
+      return '<div class="mp-rate-card"><h4>999 Silver · '+r[0]+'</h4><div class="v">₹'+Number(r[1]).toLocaleString('en-IN',{maximumFractionDigits:r[2]})+'</div><div class="u">'+r[0]+'</div>'+chgHtml(S.chg_pct)+'</div>';
+    }).join('');
+    W.querySelector('[data-role=cards]').innerHTML = h;
+    var nt = W.querySelector('[data-role=note]'); if(nt) nt.textContent = S.note + ' Not investment advice.';
+    calc();
+  }
+  function load(city){
+    fetch(W.getAttribute('data-endpoint')+'&city='+encodeURIComponent(city), {credentials:'omit'})
+      .then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d&&d.silver) paint(d); }).catch(function(){});
+  }
+  W.querySelector('[data-role=unit]').addEventListener('click', function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    W.querySelectorAll('[data-role=unit] button').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on'); calc();
+  });
+  ['wt','mk','gst','amt'].forEach(function(k){ W.querySelector('[data-role='+k+']').addEventListener('input', calc); });
+  function matchCity(c){
+    if(!c) return null;
+    var lc=String(c).toLowerCase(), hit=null;
+    [].forEach.call(sel.options,function(o){ if(o.value.toLowerCase()===lc) hit=o.value; });
+    if(!hit) [].forEach.call(sel.options,function(o){ var ol=o.value.toLowerCase(); if(lc.indexOf(ol)>-1||ol.indexOf(lc)>-1) hit=o.value; });
+    return hit;
+  }
+  function pick(city){ if(!city) return; sel.value=city; setCityLabel(city); window.mpRatesSetCity(city); load(city); }
+  sel.addEventListener('change', function(){ setCityLabel(sel.value); window.mpRatesSetCity(sel.value); load(sel.value); });
+  W.querySelector('[data-role=geo]').addEventListener('click', function(){
+    var btn=this; btn.textContent='📍 Locating…';
+    window.mpRatesGeo(function(c){ btn.textContent='📍 Use my location'; pick(matchCity(c)); });
+  });
+  var saved = window.mpRatesCity(), ok=false;
+  if(saved){ [].forEach.call(sel.options,function(o){if(o.value===saved)ok=true;}); if(ok) sel.value=saved; }
+  setCityLabel(sel.value);
+  load(sel.value);
+  calc();
+  if(!ok){ window.mpRatesAutoCity(function(c){ var m=matchCity(c); if(m && m!==sel.value) pick(m); }); }
+}());
+</script>
+    <?php
+    return mp_rates_helpers_html() . ob_get_clean();
+});
+
+/* --------------------------- [mp_rates_faq metal="gold|silver"] --------------------------- */
+add_shortcode('mp_rates_faq', function ($atts) {
+    $metal = (isset($atts['metal']) && strtolower($atts['metal']) === 'silver') ? 'silver' : 'gold';
+    $today = wp_date('j M Y');
+
+    if ($metal === 'gold') {
+        $g = mp_rates_gold('Mumbai');
+        $live = $g
+            ? 'As of ' . $today . ', the indicative 24K (999) gold rate in India is about ₹' . number_format($g['gold_24k']['g']) . ' per gram (₹' . number_format($g['gold_24k']['ten_g']) . ' per 10 grams) and 22K (916) about ₹' . number_format($g['gold_22k']['g']) . ' per gram. It updates through the day with the international price and the rupee.'
+            : 'The gold rate updates through the day with the international price and the rupee; see the live figures above.';
+        $faq = array(
+            array('What is the gold rate today in India?', $live),
+            array('What is the 22 carat gold rate today?', ($g ? 'The 22K (916) gold rate today is about ₹' . number_format($g['gold_22k']['g']) . ' per gram, i.e. ₹' . number_format($g['gold_22k']['ten_g']) . ' per 10 grams (indicative, before making charges). ' : '') . '22 carat is 91.6% pure gold and is the standard for Indian jewellery because pure 24K gold is too soft to hold a setting.'),
+            array('What is the difference between 24K, 22K and 18K gold?', '24K (999) is 99.9% pure gold, used for coins and bars. 22K (916) is 91.6% pure, the usual jewellery grade. 18K (750) is 75% pure — harder, more durable and lower cost, common in diamond and stone-set pieces. The rate per gram falls in that order.'),
+            array('Why does the gold rate change every day?', 'The India rate is the international ("spot") gold price converted to rupees, plus import duty and 3% GST. Spot gold trades around the clock and moves with the US dollar, interest-rate expectations, central-bank buying and safe-haven demand; the USD/INR rate moves too. So the rupee rate is rarely the same two days running.'),
+            array('Is GST included in the gold rate shown here?', 'The per-gram figures here are an indicative metal reference that already reflects import duty and 3% GST on the metal. Your final jeweller bill adds making charges (typically 8–25% of the metal value) and, on that, 5% GST on making — so it is higher than the quoted rate.'),
+            array('Does the gold rate differ by city?', 'The underlying metal price is national. Small differences you see between Mumbai, Delhi, Chennai, Bengaluru, Hyderabad, Kolkata and other cities come from local jewellers\' association rates, octroi/local levies and transport. MoneyPuran shows one indicative India reference; pick your city above to frame it, and always confirm the exact rate with a local hallmarked jeweller.'),
+            array('Is it a good time to buy gold?', 'MoneyPuran does not give buy or sell calls. If you are buying for a wedding or a festival, buying in smaller amounts over time (a "gold SIP") averages out the day-to-day swings. For investment exposure, sovereign gold bonds and gold ETFs avoid making charges and storage risk.'),
+        );
+        $head = 'Gold rate today — FAQ';
+    } else {
+        $s = mp_rates_silver('Mumbai');
+        $live = $s
+            ? 'As of ' . $today . ', the indicative 999 (fine) silver rate in India is about ₹' . number_format($s['per_g'], 2) . ' per gram, ₹' . number_format($s['per_100g']) . ' per 100 grams and ₹' . number_format($s['per_kg']) . ' per kilogram. It updates through the day with the international price and the rupee.'
+            : 'The silver rate updates through the day with the international price and the rupee; see the live figures above.';
+        $faq = array(
+            array('What is the silver rate today in India?', $live),
+            array('What is the price of 1 kg silver today?', ($s ? 'About ₹' . number_format($s['per_kg']) . ' for 1 kilogram of 999 silver (indicative reference, before dealer premium or making charges). ' : '') . 'Silver is usually bought by the 100-gram or 1-kilogram bar, or as coins that carry a small premium over the metal value.'),
+            array('What is 999 silver?', '"999" (or "fine" silver) is 99.9% pure silver — the grade quoted for bars, coins and investment silver. Sterling silver used in tableware and some jewellery is 925 (92.5% silver), so it is worth proportionally less per gram.'),
+            array('Why does the silver rate change every day?', 'The India rate is the international silver price converted to rupees, plus import duty and GST. Silver is both a precious metal and an industrial metal (solar panels, electronics, EVs), so it reacts to investment demand and to the manufacturing cycle — which makes it more volatile day to day than gold.'),
+            array('Is GST included in the silver rate here?', 'The per-gram and per-kg figures are an indicative metal reference that already reflects import duty and 3% GST on the metal. A dealer or jeweller then adds a premium or making charge on coins, bars and jewellery.'),
+            array('Silver or gold — which moves more?', 'Silver. The gold-to-silver ratio (how many grams of silver equal one gram of gold) typically swings between about 70 and 100. Silver tends to fall harder than gold in a sell-off and rise faster in a rally, so it is the more volatile of the two.'),
+        );
+        $head = 'Silver rate today — FAQ';
+    }
+
+    ob_start(); ?>
+<div class="mp-rates-faq">
+  <h2><?php echo esc_html($head); ?></h2>
+  <?php foreach ($faq as $i => $f) : ?>
+  <details<?php echo $i === 0 ? ' open' : ''; ?>><summary><?php echo esc_html($f[0]); ?></summary><div><?php echo wp_kses_post(wpautop($f[1])); ?></div></details>
+  <?php endforeach; ?>
+</div>
+<script type="application/ld+json"><?php echo wp_json_encode(array(
+    '@context' => 'https://schema.org', '@type' => 'FAQPage',
+    'mainEntity' => array_map(function ($f) {
+        return array('@type' => 'Question', 'name' => $f[0],
+            'acceptedAnswer' => array('@type' => 'Answer', 'text' => $f[1]));
+    }, $faq),
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?></script>
+<style>
+.mp-rates-faq{margin:26px 0}
+.mp-rates-faq h2{font-size:20px;margin:0 0 10px}
+.mp-rates-faq details{border-top:1px solid var(--mp-border,#e2e8f0);padding:10px 0}
+.mp-rates-faq summary{font-weight:600;font-size:15px;cursor:pointer;list-style:none}
+.mp-rates-faq summary::-webkit-details-marker{display:none}
+.mp-rates-faq summary::before{content:"+ ";color:var(--mp-brand,#0057ff);font-weight:700}
+.mp-rates-faq details[open] summary::before{content:"– "}
+.mp-rates-faq details>div{font-size:14px;line-height:1.6;color:var(--mp-ink2,#475569);margin-top:6px}
+.mp-rates-faq details>div p{margin:0 0 8px}
+</style>
+    <?php
+    return ob_get_clean();
+});
+
+/* SEO titles / descriptions for the rate landing pages (Rank Math). */
+add_filter('rank_math/frontend/title', function ($title) {
+    if (is_page('gold-rates'))        return 'Gold Rate Today in India — 24K & 22K Gold Price, Live by City';
+    if (is_page('silver-rate-today')) return 'Silver Rate Today in India — 999 Silver Price per Gram & per Kg';
+    return $title;
+}, 20);
+add_filter('rank_math/frontend/description', function ($desc) {
+    if (is_page('gold-rates'))        return 'Live gold rate today in India: 24K, 22K and 18K gold price per gram and per 10 grams, updated through the day, with a city selector, day-change indicator and a full price calculator (metal value + making charges + 3% GST).';
+    if (is_page('silver-rate-today')) return 'Live silver rate today in India: 999 fine silver price per gram, per 10g, per 100g and per kilogram, updated through the day, with a city selector and a value calculator.';
+    return $desc;
+}, 20);
 
 
 /* ============================================================================
