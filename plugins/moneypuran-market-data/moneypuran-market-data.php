@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.20.2
+ * Version: 1.20.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -3395,6 +3395,25 @@ add_filter('cron_schedules', function ($s) {
     if (empty($s['mp_md_3min'])) $s['mp_md_3min'] = array('interval' => 180, 'display' => 'Every 3 minutes');
     return $s;
 });
+
+/* 301s for stock pages whose ticker changed (renamed / demerged listings). */
+function mp_md_stock_redirects() {
+    return apply_filters('mp_md_stock_redirects', array(
+        'tatamotors' => 'tmpv',   // Tata Motors demerger (2025): old listing renamed Tata Motors PV
+        'ltim'       => 'ltm',     // LTIMindtree renamed LTM Limited (2026), ticker LTIM -> LTM
+    ));
+}
+add_action('template_redirect', function () {
+    if (is_admin() || !is_404()) return;
+    $path = trim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH), '/');
+    if (strpos($path, 'stocks/') !== 0) return;
+    $slug = substr($path, strlen('stocks/'));
+    $map  = mp_md_stock_redirects();
+    if (isset($map[$slug])) {
+        wp_safe_redirect(home_url('/stocks/' . $map[$slug] . '/'), 301);
+        exit;
+    }
+}, 5);
 
 add_action('rest_api_init', function () {
     register_rest_route('mp/v1', '/screener', array(
