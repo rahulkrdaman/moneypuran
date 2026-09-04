@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.24.3
+ * Version: 1.24.4
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1237,8 +1237,8 @@ html:not([data-theme="dark"]) .mp-hs-tools{background:#fff}
 .mp-hs__track{display:flex;transition:transform .55s cubic-bezier(.4,0,.2,1);will-change:transform}
 .mp-hs__slide{flex:0 0 100%;position:relative;min-height:clamp(240px,33vw,380px)}
 .mp-hs__link{display:block;position:absolute;inset:0;text-decoration:none;color:#fff}
-.mp-hs__img{position:absolute;inset:0;background-size:cover;background-position:center;transform:scale(1.02)}
-.mp-hs__shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,10,20,.15) 0%,rgba(6,10,20,.25) 45%,rgba(6,10,20,.88) 100%)}
+.mp-hs__img{position:absolute;inset:0;background-size:cover;background-position:center top;transform:scale(1.02)}
+.mp-hs__shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,10,20,.18) 0%,rgba(6,10,20,.4) 42%,rgba(6,10,20,.94) 100%)}
 .mp-hs__body{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:8px;padding:clamp(18px,3vw,34px);padding-right:clamp(60px,10vw,96px)}
 .mp-hs__cat{align-self:flex-start;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:var(--mp-brand,#0057ff);color:#fff;padding:4px 9px;border-radius:5px}
 .mp-hs__h{font-size:clamp(19px,2.6vw,30px);font-weight:800;line-height:1.22;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 2px 12px rgba(0,0,0,.45)}
