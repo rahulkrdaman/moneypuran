@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.18.0
+ * Version: 1.19.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -5106,6 +5106,7 @@ function mp_an_analyze($symbol_or_key, $mode = 'swing') {
         'disclaimer' => 'Analysis and educational information based on delayed market data. Not personalised investment advice. Consult a SEBI-registered adviser before investing.',
     );
 
+    $out['ai'] = mp_an_ai_explain($out);
     mp_an_snapshot($out);
     set_transient($ck, $out, ($mode === 'intraday' ? 3 : 12) * MINUTE_IN_SECONDS);
     return $out;
@@ -5159,6 +5160,431 @@ function mp_an_snapshot($a) {
         'ai_json' => $a['ai'] ? wp_json_encode($a['ai']) : null,
         'data_meta' => wp_json_encode($a['dataMeta']),
     ));
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * AI STOCK ANALYZER — Phase 1 : Layer 3 (AI reasoning) + [mp_analyzer] UI
+ * The AI explains the pre-computed numbers. It cannot change the score or view,
+ * and falls back to a rules-based plain-English read when no LLM key is set.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+function mp_an_ai_key() {
+    if (defined('MP_AI_ANALYSIS_KEY') && MP_AI_ANALYSIS_KEY) return (string) MP_AI_ANALYSIS_KEY;
+    $o = trim((string) get_option('mp_ai_analysis_key', ''));
+    return $o !== '' ? $o : '';
+}
+function mp_an_ai_model() {
+    if (defined('MP_AI_ANALYSIS_MODEL')) return (string) MP_AI_ANALYSIS_MODEL;
+    $o = trim((string) get_option('mp_ai_analysis_model', ''));
+    return $o !== '' ? $o : 'gemini-2.0-flash';
+}
+add_action('admin_init', function () {
+    register_setting('reading', 'mp_ai_analysis_key', array('type' => 'string', 'sanitize_callback' => 'sanitize_text_field'));
+    add_settings_field('mp_ai_analysis_key', 'AI Analyzer LLM key', function () {
+        printf('<input type="text" name="mp_ai_analysis_key" value="%s" class="regular-text" placeholder="Google AI Studio API key" />'
+            . '<p class="description">Optional. Powers the plain-English &ldquo;Why?&rdquo; on the AI Analyzer (Gemini). Blank = a rules-based explanation is used instead. Never changes the computed score/view.</p>',
+            esc_attr(get_option('mp_ai_analysis_key', '')));
+    }, 'reading');
+});
+
+/* compact facts for the model — never raw candles */
+function mp_an_ai_compact($a) {
+    $t = $a['technical']; $l = $a['levels']; $c = $a['context']; $p = $a['price'];
+    $side = function ($v) use ($p) { return ($v && $p) ? ($p > $v ? 'above' : 'below') : null; };
+    return array(
+        'symbol' => $a['label'], 'exchange' => $a['exchange'], 'mode' => $a['mode'],
+        'price' => $p, 'changePct' => $a['changePct'],
+        'computedView' => $a['view'], 'computedScore' => $a['score'], 'computedConfidence' => $a['confidence'],
+        'factorScores' => $a['factorScores'],
+        'trend' => array('vsEma20' => $side($t['ema20']), 'vsEma50' => $side($t['ema50']), 'vsEma200' => $side($t['ema200']), 'cross' => $t['cross']),
+        'momentum' => array('rsi' => $t['rsi'], 'macd' => $t['macd']['state'] ?? null, 'macdRising' => $t['macd']['rising'] ?? null, 'adx' => $t['adx']['adx'] ?? null),
+        'volume' => array('relativeVolume' => $t['relVol'], 'obvSlopePct' => $t['obv']['slopePct'] ?? null),
+        'levels' => array('support' => $l['support'] ?? array(), 'resistance' => $l['resistance'] ?? array(),
+                          'nearestSupport' => $l['nearestSupport'] ?? null, 'nearestResistance' => $l['nearestResistance'] ?? null),
+        'patterns' => array_map(function ($x) { return $x['name'] . ' (' . $x['dir'] . ')'; }, $a['patterns']),
+        'market' => array('regime' => $c['regime'], 'niftyChangePct' => $c['niftyChg'], 'indiaVix' => $c['vix'],
+                          'sector' => $c['sector'], 'sectorRelStrength1m' => $c['sectorRS1m']),
+        'returns' => array('oneMonth' => $a['chg1m'], 'oneYear' => $a['chg1y']),
+        'computedScenarios' => $a['scenarios'],
+    );
+}
+function mp_an_ai_prompt() {
+    return 'You explain PRE-COMPUTED market data for MoneyPuran. Explain WHY the computed view is what it is, in plain English. '
+        . 'Rules: (1) never output a number not in the input; (2) never say buy or sell; '
+        . '(3) overallView and confidence MUST equal computedView and computedConfidence exactly; '
+        . '(4) every keyReason must trace to an input field; (5) targetZone values must come only from the input support/resistance. '
+        . 'Return ONLY minified JSON: {"overallView":"","confidence":0,"keyReasons":["3-5"],"riskFactors":["2-4"],'
+        . '"bullishScenario":{"condition":"","targetZone":""},"neutralScenario":{"condition":""},"bearishScenario":{"condition":"","targetZone":""}}';
+}
+function mp_an_ai_call($compact) {
+    $key = mp_an_ai_key();
+    if ($key === '') return null;
+    $url = 'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode(mp_an_ai_model()) . ':generateContent?key=' . rawurlencode($key);
+    $body = array(
+        'systemInstruction' => array('parts' => array(array('text' => mp_an_ai_prompt()))),
+        'contents' => array(array('parts' => array(array('text' => 'DATA: ' . wp_json_encode($compact))))),
+        'generationConfig' => array('temperature' => 0.3, 'maxOutputTokens' => 800, 'responseMimeType' => 'application/json'),
+    );
+    $res = wp_remote_post($url, array('timeout' => 12, 'headers' => array('Content-Type' => 'application/json'), 'body' => wp_json_encode($body)));
+    if (is_wp_error($res) || wp_remote_retrieve_response_code($res) !== 200) return null;
+    $j = json_decode(wp_remote_retrieve_body($res), true);
+    $txt = $j['candidates'][0]['content']['parts'][0]['text'] ?? '';
+    $parsed = json_decode($txt, true);
+    if (!is_array($parsed) || empty($parsed['keyReasons'])) return null;
+    return $parsed;
+}
+/* rules-based plain-English read — the default, and the fallback */
+function mp_an_ai_template($a) {
+    $t = $a['technical']; $l = $a['levels']; $c = $a['context']; $p = $a['price'];
+    $R = array(); $K = array();
+    $above = array();
+    foreach (array('20' => $t['ema20'], '50' => $t['ema50'], '200' => $t['ema200']) as $k => $v) if ($v && $p && $p > $v) $above[] = $k;
+    if (count($above) >= 2) $R[] = 'Price is trading above its ' . implode('- and ', $above) . '-day moving averages.';
+    elseif (count($above) === 0 && $t['ema20']) $R[] = 'Price is below all of its key moving averages &mdash; a weak trend structure.';
+    if ($t['cross'] === 'golden') $R[] = 'A golden cross (50-day average above the 200-day) formed recently.';
+    if ($t['cross'] === 'death') $K[] = 'A death cross (50-day average below the 200-day) formed recently.';
+    if ($t['rsi'] !== null) {
+        if ($t['rsi'] >= 70) { $R[] = 'RSI at ' . $t['rsi'] . ' shows strong momentum, though it is near overbought.'; $K[] = 'RSI near overbought can precede a pullback.'; }
+        elseif ($t['rsi'] >= 55) $R[] = 'RSI at ' . $t['rsi'] . ' points to positive momentum without being stretched.';
+        elseif ($t['rsi'] <= 30) $R[] = 'RSI at ' . $t['rsi'] . ' is in oversold territory.';
+        elseif ($t['rsi'] <= 45) $R[] = 'RSI at ' . $t['rsi'] . ' reflects soft momentum.';
+    }
+    if (!empty($t['macd']['state'])) $R[] = 'MACD is ' . $t['macd']['state'] . (!empty($t['macd']['rising']) ? ' and rising' : '') . '.';
+    if (isset($t['adx']['adx'])) {
+        if ($t['adx']['adx'] >= 25) $R[] = 'ADX at ' . $t['adx']['adx'] . ' confirms a trending market.';
+        else $K[] = 'ADX at ' . $t['adx']['adx'] . ' points to a weak or rangebound trend.';
+    }
+    if ($t['relVol'] !== null) {
+        if ($t['relVol'] >= 1.5) $R[] = 'Volume is running at ' . $t['relVol'] . '&times; the 20-day average, ' . ((($a['changePct'] ?? 0) >= 0) ? 'supporting the up-move' : 'behind the decline') . '.';
+        elseif ($t['relVol'] < 0.7) $K[] = 'Volume is below average, so the current move lacks conviction.';
+    }
+    if ($l && $l['nearestSupport'] !== null && $l['nearestResistance'] !== null) {
+        $R[] = 'Nearby support sits near ' . number_format($l['nearestSupport'], 2) . ' and resistance near ' . number_format($l['nearestResistance'], 2) . '.';
+        if ($l['distResistancePct'] !== null && $l['distResistancePct'] < 1) $K[] = 'Price is within ' . $l['distResistancePct'] . '% of resistance, capping near-term upside.';
+    }
+    foreach ($a['patterns'] as $pt) {
+        if ($pt['dir'] === 'bullish') $R[] = 'A ' . $pt['name'] . ' candlestick formed on the latest bar.';
+        elseif ($pt['dir'] === 'bearish') $K[] = 'A ' . $pt['name'] . ' candlestick formed on the latest bar.';
+    }
+    $reg = array('risk-on' => 'The broad market is in a risk-on mood', 'risk-off' => 'The broad market is risk-off', 'neutral' => 'The broad market is neutral');
+    $R[] = ($reg[$c['regime']] ?? 'The market backdrop is mixed')
+        . ($c['niftyChg'] !== null ? ' (Nifty ' . ($c['niftyChg'] >= 0 ? '+' : '') . $c['niftyChg'] . '%)' : '') . '.';
+    if ($c['vix'] !== null && $c['vix'] > 18) $K[] = 'India VIX at ' . $c['vix'] . ' signals elevated volatility.';
+    if ($c['sectorRS1m'] !== null && $c['sector']) {
+        if ($c['sectorRS1m'] > 1) $R[] = 'It is outperforming the ' . $c['sector'] . ' sector by ' . $c['sectorRS1m'] . ' pts over the past month.';
+        elseif ($c['sectorRS1m'] < -1) $K[] = 'It is lagging the ' . $c['sector'] . ' sector by ' . abs($c['sectorRS1m']) . ' pts over the past month.';
+    }
+    if (!$R) $R[] = 'The computed factors are mixed, which is why the view is ' . strtolower(str_replace('_', ' ', $a['view'])) . '.';
+    if (!$K) $K[] = 'Broad-market volatility can override any single-stock setup.';
+    return array(
+        'overallView' => $a['view'], 'confidence' => $a['confidence'],
+        'keyReasons'  => array_slice(array_values(array_unique($R)), 0, 5),
+        'riskFactors' => array_slice(array_values(array_unique($K)), 0, 4),
+        'bullishScenario' => $a['scenarios']['bullish'] ?? null,
+        'neutralScenario' => $a['scenarios']['neutral'] ?? null,
+        'bearishScenario' => $a['scenarios']['bearish'] ?? null,
+        'source' => 'rules',
+    );
+}
+function mp_an_ai_explain($a) {
+    if (empty($a['ok'])) return null;
+    $ck = 'mp_anai_' . md5($a['symbol'] . '|' . $a['mode'] . '|' . $a['view'] . '|' . $a['score']);
+    $c = get_transient($ck);
+    if (is_array($c)) return $c;
+    $out = null;
+    if (mp_an_ai_key() !== '') {
+        $llm = mp_an_ai_call(mp_an_ai_compact($a));
+        if (is_array($llm)) {
+            $llm['overallView'] = $a['view'];
+            $llm['confidence']  = $a['confidence'];
+            foreach (array('bullishScenario', 'neutralScenario', 'bearishScenario') as $sk) {
+                $native = str_replace('Scenario', '', $sk);
+                if (empty($llm[$sk]) && !empty($a['scenarios'][$native])) $llm[$sk] = $a['scenarios'][$native];
+            }
+            $llm['source'] = 'ai';
+            $out = $llm;
+        }
+    }
+    if ($out === null) $out = mp_an_ai_template($a);
+    set_transient($ck, $out, 30 * MINUTE_IN_SECONDS);
+    return $out;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * [mp_analyzer]  —  the dashboard UI (spec §46). Server-rendered; the mode
+ * switcher reloads with ?mode=. [mp_analyzer search="1"] renders the search hero.
+ * ════════════════════════════════════════════════════════════════════════════ */
+function mp_an_bar($label, $score) {
+    if ($score === null) return '<div class="mp-az-fac"><span>' . esc_html($label) . '</span><span class="mp-az-fac__na">no data</span></div>';
+    $cls = $score >= 60 ? 'g' : ($score <= 40 ? 'r' : 'n');
+    return '<div class="mp-az-fac"><span>' . esc_html($label) . '</span>'
+        . '<span class="mp-az-fac__bar"><i class="' . $cls . '" style="width:' . (int) $score . '%"></i></span>'
+        . '<b>' . (int) $score . '</b></div>';
+}
+function mp_an_view_label($v) {
+    return ucwords(strtolower(str_replace('_', ' ', $v)));
+}
+function mp_an_view_class($v) {
+    if (strpos($v, 'BULLISH') !== false) return strpos($v, 'MODERATELY') !== false ? 'mbull' : 'bull';
+    if (strpos($v, 'BEARISH') !== false) return strpos($v, 'MODERATELY') !== false ? 'mbear' : 'bear';
+    return 'neut';
+}
+
+add_shortcode('mp_analyzer', function ($atts) {
+    $atts = shortcode_atts(array('symbol' => '', 'mode' => '', 'search' => ''), $atts);
+    $q = isset($_GET['q']) ? sanitize_text_field(wp_unslash($_GET['q'])) : '';
+    $symbol = $atts['symbol'] !== '' ? $atts['symbol'] : $q;
+    $mode = isset($_GET['mode']) ? sanitize_key($_GET['mode']) : ($atts['mode'] ?: 'swing');
+    if (!in_array($mode, array('intraday', 'swing', 'positional'), true)) $mode = 'swing';
+
+    ob_start();
+    echo mp_an_ui_css();
+
+    if ($symbol === '') {
+        echo mp_an_search_hero();
+        return ob_get_clean();
+    }
+
+    $a = mp_an_analyze($symbol, $mode);
+
+    if (empty($a['ok'])) {
+        echo '<div class="mp-az mp-az--err">' . mp_an_search_hero()
+            . '<p class="mp-az__err">' . esc_html($a['reason'] ?? 'Could not analyse that symbol. Try an exact NSE symbol like RELIANCE or an index like NIFTY.') . '</p></div>';
+        return ob_get_clean();
+    }
+
+    $ai   = $a['ai'] ?: array();
+    $vc   = mp_an_view_class($a['view']);
+    $up   = ($a['changePct'] ?? 0) >= 0;
+    $base = get_permalink();
+    $modeUrl = function ($m) use ($base, $symbol, $q) {
+        $args = array('mode' => $m);
+        if ($q !== '') $args['q'] = $q;
+        return esc_url(add_query_arg($args, $base));
+    };
+    ?>
+<div class="mp-az" data-symbol="<?php echo esc_attr($a['symbol']); ?>">
+
+  <div class="mp-az__top">
+    <div class="mp-az__id">
+      <h2 class="mp-az__name"><?php echo esc_html($a['label']); ?><?php if ($a['exchange']) : ?> <span><?php echo esc_html($a['exchange']); ?></span><?php endif; ?></h2>
+      <div class="mp-az__px">
+        <b><?php echo $a['exchange'] === 'NSE' ? '&#8377;' : ''; ?><?php echo number_format($a['price'], 2); ?></b>
+        <?php if ($a['changePct'] !== null) : ?>
+        <span class="mp-az__chg <?php echo $up ? 'up' : 'dn'; ?>"><?php echo $up ? '&#9650;' : '&#9660;'; ?> <?php echo ($up ? '+' : '') . number_format($a['change'], 2); ?> (<?php echo ($up ? '+' : '') . $a['changePct']; ?>%)</span>
+        <?php endif; ?>
+      </div>
+      <div class="mp-az__meta">Data may be delayed &middot; updated <?php echo esc_html(wp_date('H:i')); ?> IST &middot; source: <?php echo esc_html($a['dataMeta']['source']); ?></div>
+    </div>
+    <div class="mp-az__modes" role="tablist">
+      <?php foreach (array('intraday' => 'Intraday', 'swing' => 'Swing', 'positional' => 'Positional') as $mk => $ml) : ?>
+      <a href="<?php echo $modeUrl($mk); ?>" class="<?php echo $mode === $mk ? 'is-on' : ''; ?>"><?php echo esc_html($ml); ?></a>
+      <?php endforeach; ?>
+    </div>
+  </div>
+
+  <div class="mp-az__view mp-az__view--<?php echo $vc; ?>">
+    <div class="mp-az__view-main">
+      <span class="mp-az__view-eyebrow">AI Market View &middot; <?php echo esc_html(ucfirst($mode)); ?></span>
+      <strong class="mp-az__view-big"><?php echo esc_html(mp_an_view_label($a['view'])); ?></strong>
+      <span class="mp-az__conf"><?php echo (int) $a['confidence']; ?><small>/100 model confidence</small></span>
+    </div>
+    <div class="mp-az__facs">
+      <?php
+      $order = array('trend' => 'Price trend', 'momentum' => 'Momentum', 'volume' => 'Volume', 'levels' => 'Support / resistance', 'market' => 'Market trend', 'sector' => 'Sector strength', 'fo' => 'Options data', 'news' => 'News', 'fundamentals' => 'Fundamentals');
+      foreach ($order as $fk => $fl) {
+        if (!array_key_exists($fk, $a['factorScores'])) continue;
+        echo mp_an_bar($fl, $a['factorScores'][$fk]);
+      }
+      ?>
+    </div>
+  </div>
+
+  <?php if (!empty($ai['keyReasons'])) : ?>
+  <div class="mp-az__why">
+    <h3>Why <?php echo esc_html(strtolower(mp_an_view_label($a['view']))); ?>?</h3>
+    <ul class="mp-az__pro">
+      <?php foreach ($ai['keyReasons'] as $r) echo '<li>' . wp_kses_post($r) . '</li>'; ?>
+    </ul>
+    <?php if (!empty($ai['riskFactors'])) : ?>
+    <ul class="mp-az__con">
+      <?php foreach ($ai['riskFactors'] as $r) echo '<li>' . wp_kses_post($r) . '</li>'; ?>
+    </ul>
+    <?php endif; ?>
+    <p class="mp-az__ai-src"><?php echo $ai['source'] === 'ai' ? 'Explanation generated by AI from the computed data.' : 'Rules-based explanation from the computed indicators.'; ?></p>
+  </div>
+  <?php endif; ?>
+
+  <div class="mp-az__grid">
+
+    <?php if (!empty($a['levels']['support']) || !empty($a['levels']['resistance'])) : ?>
+    <div class="mp-az__card">
+      <h4>Key levels</h4>
+      <table class="mp-az__lv">
+        <?php foreach (array_reverse($a['levels']['resistance']) as $r) : ?>
+        <tr class="r"><td>Resistance</td><td><?php echo number_format($r, 2); ?></td><td><?php echo $a['price'] ? '+' . round(($r - $a['price']) / $a['price'] * 100, 1) . '%' : ''; ?></td></tr>
+        <?php endforeach; ?>
+        <tr class="now"><td>Current</td><td><?php echo number_format($a['price'], 2); ?></td><td>&mdash;</td></tr>
+        <?php foreach ($a['levels']['support'] as $s) : ?>
+        <tr class="s"><td>Support</td><td><?php echo number_format($s, 2); ?></td><td><?php echo $a['price'] ? '&minus;' . round(($a['price'] - $s) / $a['price'] * 100, 1) . '%' : ''; ?></td></tr>
+        <?php endforeach; ?>
+      </table>
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($a['scenarios'])) : ?>
+    <div class="mp-az__card">
+      <h4>Scenarios</h4>
+      <div class="mp-az__scn">
+        <div class="b"><b>Bullish</b><span><?php echo esc_html($a['scenarios']['bullish']['condition']); ?><?php if (!empty($a['scenarios']['bullish']['targetZone']) && $a['scenarios']['bullish']['targetZone'] !== 'n/a') : ?> &rarr; <em><?php echo esc_html($a['scenarios']['bullish']['targetZone']); ?></em><?php endif; ?></span></div>
+        <div class="n"><b>Neutral</b><span><?php echo esc_html($a['scenarios']['neutral']['condition']); ?></span></div>
+        <div class="r"><b>Bearish</b><span><?php echo esc_html($a['scenarios']['bearish']['condition']); ?><?php if (!empty($a['scenarios']['bearish']['targetZone']) && $a['scenarios']['bearish']['targetZone'] !== 'n/a') : ?> &rarr; <em><?php echo esc_html($a['scenarios']['bearish']['targetZone']); ?></em><?php endif; ?></span></div>
+      </div>
+    </div>
+    <?php endif; ?>
+
+    <div class="mp-az__card">
+      <h4>Technical</h4>
+      <?php
+      $t = $a['technical'];
+      $rows = array();
+      if ($t['rsi'] !== null) $rows['RSI (14)'] = $t['rsi'] . ($t['rsi'] >= 70 ? ' overbought' : ($t['rsi'] <= 30 ? ' oversold' : ''));
+      if (!empty($t['macd']['state'])) $rows['MACD'] = ucfirst($t['macd']['state']) . (!empty($t['macd']['rising']) ? ', rising' : '');
+      if (isset($t['adx']['adx'])) $rows['ADX'] = $t['adx']['adx'] . ($t['adx']['adx'] >= 25 ? ' (trending)' : ' (weak)');
+      if (isset($t['stochRsi']['k'])) $rows['Stoch RSI'] = $t['stochRsi']['k'];
+      if ($t['cci'] !== null) $rows['CCI (20)'] = $t['cci'];
+      if ($t['ema20'] !== null) $rows['EMA 20'] = number_format($t['ema20'], 2) . ($a['price'] > $t['ema20'] ? ' &#9650;' : ' &#9660;');
+      if ($t['ema50'] !== null) $rows['EMA 50'] = number_format($t['ema50'], 2) . ($a['price'] > $t['ema50'] ? ' &#9650;' : ' &#9660;');
+      if ($t['sma200'] !== null) $rows['SMA 200'] = number_format($t['sma200'], 2) . ($a['price'] > $t['sma200'] ? ' &#9650;' : ' &#9660;');
+      if ($t['relVol'] !== null) $rows['Rel. volume'] = $t['relVol'] . '&times;';
+      if ($t['atr'] !== null) $rows['ATR (14)'] = number_format($t['atr'], 2);
+      if ($t['cross']) $rows['MA cross'] = ucfirst($t['cross']) . ' cross';
+      echo '<table class="mp-az__kv">';
+      foreach ($rows as $k => $v) echo '<tr><td>' . esc_html($k) . '</td><td>' . wp_kses_post($v) . '</td></tr>';
+      echo '</table>';
+      ?>
+    </div>
+
+    <div class="mp-az__card">
+      <h4>Market context</h4>
+      <table class="mp-az__kv">
+        <tr><td>Regime</td><td><?php echo esc_html(ucwords(str_replace('-', ' ', $a['context']['regime']))); ?></td></tr>
+        <?php if ($a['context']['niftyChg'] !== null) : ?><tr><td>Nifty today</td><td><?php echo ($a['context']['niftyChg'] >= 0 ? '+' : '') . $a['context']['niftyChg']; ?>%</td></tr><?php endif; ?>
+        <?php if ($a['context']['vix'] !== null) : ?><tr><td>India VIX</td><td><?php echo $a['context']['vix']; ?><?php echo $a['context']['vix'] > 20 ? ' (elevated)' : ($a['context']['vix'] < 13 ? ' (calm)' : ' (moderate)'); ?></td></tr><?php endif; ?>
+        <?php if ($a['context']['sector']) : ?><tr><td>Sector</td><td><?php echo esc_html($a['context']['sector']); ?><?php echo $a['context']['sectorRS1m'] !== null ? ' &middot; RS ' . ($a['context']['sectorRS1m'] >= 0 ? '+' : '') . $a['context']['sectorRS1m'] . ' pts (1m)' : ''; ?></td></tr><?php endif; ?>
+        <?php if ($a['context']['usLine']) : ?><tr><td>Global</td><td><?php echo esc_html($a['context']['usLine']); ?></td></tr><?php endif; ?>
+        <?php if ($a['chg1m'] !== null) : ?><tr><td>1-month</td><td><?php echo ($a['chg1m'] >= 0 ? '+' : '') . $a['chg1m']; ?>%</td></tr><?php endif; ?>
+        <?php if ($a['chg1y'] !== null) : ?><tr><td>1-year</td><td><?php echo ($a['chg1y'] >= 0 ? '+' : '') . $a['chg1y']; ?>%</td></tr><?php endif; ?>
+      </table>
+    </div>
+  </div>
+
+  <div class="mp-az__chart">
+    <h4>Price chart</h4>
+    <?php echo do_shortcode('[mp_candle_chart symbol="' . esc_attr($symbol) . '" tf="' . ($mode === 'intraday' ? '15m' : ($mode === 'positional' ? '1W' : '1D')) . '"]'); ?>
+  </div>
+
+  <?php if (!empty($a['patterns'])) : ?>
+  <p class="mp-az__pat"><b>Candlestick:</b> <?php echo esc_html(implode(', ', array_map(function ($x) { return $x['name']; }, $a['patterns']))); ?> &mdash; treated as confluence, not a standalone signal.</p>
+  <?php endif; ?>
+
+  <p class="mp-az__disc"><?php echo esc_html($a['disclaimer']); ?> Futures and options carry substantial risk; scenarios are analytical possibilities, not guaranteed outcomes.</p>
+</div>
+    <?php
+    return ob_get_clean();
+});
+
+function mp_an_search_hero() {
+    $ex = array('RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'NIFTY', 'BANKNIFTY');
+    ob_start(); ?>
+<div class="mp-az-hero">
+  <form class="mp-az-search" method="get" action="">
+    <input type="text" name="q" placeholder="Enter a stock or index &mdash; e.g. RELIANCE, NIFTY" autocomplete="off" required>
+    <button type="submit">Analyze</button>
+  </form>
+  <div class="mp-az-ex">
+    <?php foreach ($ex as $e) : ?><a href="<?php echo esc_url(add_query_arg('q', $e, get_permalink())); ?>"><?php echo esc_html($e); ?></a><?php endforeach; ?>
+  </div>
+  <p class="mp-az-hero__note">Technical, momentum, volume, support/resistance and market-context analysis with a transparent confidence score. Educational analysis, not investment advice.</p>
+</div>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_an_ui_css() {
+    static $done = false;
+    if ($done) return '';
+    $done = true;
+    return '<style id="mp-az-css">
+.mp-az{--g:#16a34a;--r:#dc2626;--n:#6b7280;color:var(--mp-ink,#0f172a);margin:8px 0 28px}
+.mp-az__top{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:16px}
+.mp-az__name{font-size:22px;font-weight:800;margin:0 0 4px}
+.mp-az__name span{font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--mp-muted,#64748b);border:1px solid var(--mp-border,#e2e8f0);padding:2px 6px;border-radius:5px;vertical-align:middle}
+.mp-az__px b{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums}
+.mp-az__chg{font-size:14px;font-weight:600;margin-left:8px}
+.mp-az__chg.up{color:var(--g)}.mp-az__chg.dn{color:var(--r)}
+.mp-az__meta{font-size:11px;color:var(--mp-muted,#64748b);margin-top:4px}
+.mp-az__modes{display:flex;gap:4px;background:var(--mp-surface2,#f1f5f9);padding:3px;border-radius:9px}
+.mp-az__modes a{padding:6px 12px;font-size:12.5px;font-weight:600;border-radius:7px;color:var(--mp-muted,#64748b);text-decoration:none}
+.mp-az__modes a.is-on{background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.mp-az__view{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:20px;border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:20px 22px;background:var(--mp-surface,#fff)}
+.mp-az__view--bull{border-left:4px solid var(--g)}.mp-az__view--mbull{border-left:4px solid #4ea86e}
+.mp-az__view--bear{border-left:4px solid var(--r)}.mp-az__view--mbear{border-left:4px solid #d9737a}
+.mp-az__view--neut{border-left:4px solid var(--n)}
+.mp-az__view-eyebrow{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--mp-muted,#64748b)}
+.mp-az__view-big{display:block;font-size:26px;font-weight:800;line-height:1.15;margin:6px 0 8px}
+.mp-az__view--bull .mp-az__view-big,.mp-az__view--mbull .mp-az__view-big{color:var(--g)}
+.mp-az__view--bear .mp-az__view-big,.mp-az__view--mbear .mp-az__view-big{color:var(--r)}
+.mp-az__conf{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
+.mp-az__conf small{font-size:12px;font-weight:500;color:var(--mp-muted,#64748b);margin-left:4px}
+.mp-az__facs{display:grid;gap:7px}
+.mp-az-fac{display:grid;grid-template-columns:120px 1fr 26px;gap:10px;align-items:center;font-size:12.5px}
+.mp-az-fac__bar{height:7px;border-radius:4px;background:var(--mp-surface2,#eef1f5);overflow:hidden}
+.mp-az-fac__bar i{display:block;height:100%;border-radius:4px}
+.mp-az-fac__bar i.g{background:var(--g)}.mp-az-fac__bar i.r{background:var(--r)}.mp-az-fac__bar i.n{background:#94a3b8}
+.mp-az-fac b{font-variant-numeric:tabular-nums;text-align:right;font-size:12px}
+.mp-az-fac__na{font-size:11px;color:var(--mp-muted,#94a3b8);grid-column:2/4}
+.mp-az__why{margin:18px 0;border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:18px 22px;background:var(--mp-surface,#fff)}
+.mp-az__why h3{font-size:16px;font-weight:700;margin:0 0 10px}
+.mp-az__why ul{margin:0 0 8px;padding:0;list-style:none;display:grid;gap:6px;font-size:13.5px;line-height:1.5}
+.mp-az__pro li::before{content:"\2713 ";color:var(--g);font-weight:700}
+.mp-az__con li::before{content:"\26A0 ";color:#b45309}
+.mp-az__ai-src{font-size:11px;color:var(--mp-muted,#94a3b8);margin:6px 0 0}
+.mp-az__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:18px 0}
+.mp-az__card{border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:14px 16px;background:var(--mp-surface,#fff)}
+.mp-az__card h4{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--mp-muted,#64748b);margin:0 0 10px}
+.mp-az__kv,.mp-az__lv{width:100%;border-collapse:collapse;font-size:13px}
+.mp-az__kv td,.mp-az__lv td{padding:5px 0;border-top:1px solid var(--mp-border,#eef1f4)}
+.mp-az__kv tr:first-child td,.mp-az__lv tr:first-child td{border-top:0}
+.mp-az__kv td:first-child{color:var(--mp-muted,#64748b)}
+.mp-az__kv td:last-child,.mp-az__lv td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.mp-az__lv td:nth-child(2){text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.mp-az__lv td:first-child{color:var(--mp-muted,#64748b)}
+.mp-az__lv tr.r td:first-child{color:var(--r)}.mp-az__lv tr.s td:first-child{color:var(--g)}
+.mp-az__lv tr.now{font-weight:700;background:var(--mp-surface2,#f8fafc)}
+.mp-az__scn{display:grid;gap:9px;font-size:13px}
+.mp-az__scn div{display:grid;gap:2px;padding-left:10px;border-left:3px solid var(--n)}
+.mp-az__scn div.b{border-color:var(--g)}.mp-az__scn div.r{border-color:var(--r)}
+.mp-az__scn b{font-size:12px}
+.mp-az__scn span{color:var(--mp-ink2,#475569)}
+.mp-az__scn em{font-style:normal;font-weight:600}
+.mp-az__chart{margin:18px 0}
+.mp-az__chart h4{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--mp-muted,#64748b);margin:0 0 8px}
+.mp-az__pat{font-size:12.5px;color:var(--mp-ink2,#475569);margin:10px 0}
+.mp-az__disc{font-size:11px;color:var(--mp-muted,#94a3b8);line-height:1.5;border-top:1px solid var(--mp-border,#e2e8f0);padding-top:12px;margin-top:16px}
+.mp-az__err{color:var(--r);font-size:13px;margin-top:12px}
+.mp-az-hero{text-align:center;padding:26px 16px 20px;border:1px solid var(--mp-border,#e2e8f0);border-radius:16px;background:var(--mp-surface,#fff)}
+.mp-az-search{display:flex;gap:8px;max-width:460px;margin:0 auto}
+.mp-az-search input{flex:1;padding:12px 14px;font-size:14px;border:1px solid var(--mp-border,#cbd5e1);border-radius:10px;background:var(--mp-bg,#fff);color:var(--mp-ink,#0f172a)}
+.mp-az-search button{padding:12px 20px;font-size:14px;font-weight:700;border:0;border-radius:10px;background:var(--mp-brand,#0057ff);color:#fff;cursor:pointer}
+.mp-az-ex{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:12px 0 0}
+.mp-az-ex a{font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;background:var(--mp-surface2,#f1f5f9);color:var(--mp-ink2,#475569);text-decoration:none}
+.mp-az-ex a:hover{background:var(--mp-brand,#0057ff);color:#fff}
+.mp-az-hero__note{font-size:12px;color:var(--mp-muted,#64748b);max-width:44ch;margin:14px auto 0}
+@media(max-width:640px){.mp-az__view{grid-template-columns:1fr}.mp-az-fac{grid-template-columns:100px 1fr 24px}.mp-az__name{font-size:19px}.mp-az__px b{font-size:22px}}
+html[data-theme="dark"] .mp-az__modes a.is-on{box-shadow:0 1px 3px rgba(0,0,0,.4)}
+</style>';
 }
 
 /* ---- REST ---- */
