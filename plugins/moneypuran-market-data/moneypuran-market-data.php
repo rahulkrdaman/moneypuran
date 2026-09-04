@@ -4844,9 +4844,10 @@ function mp_an_context($sym) {
     // sector RS: stock 1m return vs sector index 1m return vs nifty 1m
     $rs = null; $secName = null; $secChg1m = null; $stkChg1m = null;
     $flat = function_exists('mp_md_stock_universe_flat') ? mp_md_stock_universe_flat() : array();
-    if (isset($flat[$sym])) {
-        $secName = $flat[$sym]['sector'];
-        $secKey = function_exists('mp_md_sector_candle_key') ? mp_md_sector_candle_key($flat[$sym]['secIndex']) : 'nifty';
+    $bareSym = preg_replace('/\.(NS|BO)$/', '', $sym);
+    if (isset($flat[$bareSym])) {
+        $secName = $flat[$bareSym]['sector'];
+        $secKey = function_exists('mp_md_sector_candle_key') ? mp_md_sector_candle_key($flat[$bareSym]['secIndex']) : 'nifty';
         $sb = mp_candle_ohlc($secKey, '1D')['bars'] ?? array();
         $kb = mp_candle_ohlc($sym, '1D')['bars'] ?? array();
         $r1m = function ($b) {
@@ -4896,7 +4897,7 @@ function mp_an_view_for_score($score) {
 
 /* ---- factor scores from computed data (0-100, 50 = neutral) ---- */
 function mp_an_factor_scores($tech, $levels, $ctx, $quote, $bars) {
-    $clamp = function ($v) { return max(0, min(100, $v)); };
+    $clamp = function ($v) { return (int) round(max(0, min(100, $v))); };
     $lastBar = end($bars);
     $price = $quote['price'] ?? (is_array($lastBar) ? ($lastBar[4] ?? null) : null);
     $C = array_column($bars, 4);
