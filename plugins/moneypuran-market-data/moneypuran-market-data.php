@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.20.3
+ * Version: 1.21.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1197,12 +1197,14 @@ add_shortcode('mp_hero_slider', function ($atts) {
 <style id="mp-hs-css">
 .mp-hsrow{display:grid;grid-template-columns:minmax(0,1fr) 288px;gap:16px;margin:14px 0 26px}
 .mp-hs{position:relative;margin:0;border-radius:14px;overflow:hidden;background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08))}
-.mp-hs-tools{background:var(--mp-surface,#0f172a);border:1px solid var(--mp-border,rgba(255,255,255,.08));border-radius:14px;padding:10px;display:flex;flex-direction:column;align-content:start}
-.mp-hs-tools__h{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--mp-muted,#94a3b8);margin:6px 8px 6px}
-.mp-hs-tools a{display:flex;align-items:center;padding:9px 10px;font-size:13.5px;font-weight:600;color:var(--mp-ink2,#cbd5e1);border-radius:8px;text-decoration:none;transition:background .14s,color .14s}
+.mp-hs-tools{background:var(--mp-surface2,#1e293b);border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:8px 10px 10px;display:flex;flex-direction:column;align-content:start;box-shadow:0 1px 3px rgba(2,6,23,.06)}
+html:not([data-theme="dark"]) .mp-hs-tools{background:#fff}
+.mp-hs-tools__h{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--mp-muted,#94a3b8);margin:6px 6px;padding-bottom:8px;border-bottom:1px solid var(--mp-border,#e2e8f0)}
+.mp-hs-tools a{display:flex;align-items:center;padding:10px 8px;font-size:13.5px;font-weight:600;color:var(--mp-ink2,#cbd5e1);border-radius:8px;text-decoration:none;transition:background .14s,color .14s}
+.mp-hs-tools a+a{border-top:1px solid var(--mp-border,rgba(148,163,184,.14))}
 .mp-hs-tools a:hover{background:var(--mp-brand-lt,rgba(0,87,255,.12));color:var(--mp-brand,#0057ff)}
 @media(max-width:900px){.mp-hsrow{grid-template-columns:1fr}
-  .mp-hs-tools{flex-direction:row;flex-wrap:wrap;gap:2px 4px}.mp-hs-tools__h{flex:1 0 100%}.mp-hs-tools a{flex:0 0 auto;padding:8px 10px}}
+  .mp-hs-tools{flex-direction:row;flex-wrap:wrap;gap:2px 4px}.mp-hs-tools__h{flex:1 0 100%;border-bottom:0;padding-bottom:0}.mp-hs-tools a{flex:0 0 auto;padding:8px 10px}.mp-hs-tools a+a{border-top:0}}
 .mp-hs__viewport{overflow:hidden}
 .mp-hs__track{display:flex;transition:transform .55s cubic-bezier(.4,0,.2,1);will-change:transform}
 .mp-hs__slide{flex:0 0 100%;position:relative;min-height:clamp(240px,33vw,380px)}
@@ -3893,7 +3895,9 @@ html[data-theme="dark"] .mp-why__lead,html[data-theme="dark"] .mp-why__faq detai
 });
 
 /* --------------------------- [mp_market_pulse] --------------------------- */
-add_shortcode('mp_market_pulse', function () {
+add_shortcode('mp_market_pulse', function ($atts) {
+    $atts = shortcode_atts(array('lookup' => '1'), $atts);
+    $lookup = $atts['lookup'] !== '0';
     $ep = esc_url(home_url('/wp-json/mp/v1/screener'));
     $oh = esc_url(home_url('/wp-json/mp/v1/ohlc'));
     ob_start(); ?>
@@ -3904,11 +3908,13 @@ add_shortcode('mp_market_pulse', function () {
     <div><h4>Top losers</h4><ol data-role="lose"><li>&mdash;</li></ol></div>
     <div><h4>Signal changes today</h4><div data-role="chg" class="mp-pulse__chg">&mdash;</div></div>
   </div>
+  <?php if ($lookup) : ?>
   <form class="mp-pulse__lookup" data-role="lookup">
     <input type="text" placeholder="Search any NSE stock (e.g. RELIANCE, DMART)" aria-label="Search a stock" autocomplete="off">
     <button type="submit">Analyse</button>
   </form>
   <div data-role="card"></div>
+  <?php endif; ?>
   <p class="mp-pulse__note">Movers and signal changes are across the ~54 large-caps we track. Not investment advice.</p>
 </div>
 <style>
@@ -3959,7 +3965,8 @@ html[data-theme="dark"] .mp-pulse__lookup input{background:#0a0f1e;border-color:
   fetch(EP,{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d) paint(d); }).catch(function(){});
   setInterval(function(){ fetch(EP,{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(d){ if(d) paint(d); }).catch(function(){}); }, 45000);
 
-  q('lookup').addEventListener('submit', function(e){
+  var LK=q('lookup');
+  if(LK) LK.addEventListener('submit', function(e){
     e.preventDefault();
     var v=(this.querySelector('input').value||'').trim().toUpperCase().replace(/[^A-Z0-9&.-]/g,'');
     if(!v) return;
@@ -5040,8 +5047,47 @@ function mp_an_scenarios($price, $levels, $atr) {
 function mp_an_mode_tf($mode) {
     return array('intraday' => '15m', 'swing' => '1D', 'positional' => '1W')[$mode] ?? '1D';
 }
+/**
+ * Turn a free-text query (company name, index name, ticker with spaces) into a
+ * symbol mp_candle_resolve() understands. Idempotent for clean tickers.
+ */
+function mp_an_resolve_query($raw) {
+    $raw = trim((string) $raw);
+    if ($raw === '') return $raw;
+    $u = strtoupper($raw);
+    $alias = array(
+        'NIFTY' => 'NIFTY', 'NIFTY50' => 'NIFTY', 'NIFTY 50' => 'NIFTY', 'NIFTY-50' => 'NIFTY', 'NSEI' => 'NIFTY',
+        'BANKNIFTY' => 'BANKNIFTY', 'NIFTYBANK' => 'BANKNIFTY', 'BANK NIFTY' => 'BANKNIFTY', 'NIFTY BANK' => 'BANKNIFTY',
+        'SENSEX' => 'SENSEX', 'BSE SENSEX' => 'SENSEX', 'BSESN' => 'SENSEX',
+        'NIFTY IT' => 'NIFTYIT', 'NIFTY AUTO' => 'NIFTYAUTO', 'NIFTY PHARMA' => 'NIFTYPHARMA',
+        'NIFTY FMCG' => 'NIFTYFMCG', 'NIFTY METAL' => 'NIFTYMETAL', 'NIFTY ENERGY' => 'NIFTYENERGY',
+    );
+    if (isset($alias[$u])) return $alias[$u];
+
+    $flat = function_exists('mp_md_stock_universe_flat') ? mp_md_stock_universe_flat() : array();
+    $tick = preg_replace('/[^A-Z0-9]/', '', $u);
+    if ($tick !== '' && isset($flat[$tick])) return $tick;
+
+    $norm = function ($s) { return preg_replace('/[^a-z0-9]/', '', strtolower((string) $s)); };
+    $qn = $norm($raw);
+    if (strlen($qn) >= 3) {
+        $pref = null; $sub = null;
+        foreach ($flat as $sym => $m) {
+            $nn = $norm(isset($m['name']) ? $m['name'] : '');
+            if ($nn === '') continue;
+            if ($nn === $qn) return $sym;
+            if ($pref === null && (strpos($nn, $qn) === 0 || strpos($qn, $nn) === 0)) $pref = $sym;
+            if ($sub === null && strpos($nn, $qn) !== false) $sub = $sym;
+        }
+        if ($pref !== null) return $pref;
+        if ($sub !== null) return $sub;
+    }
+    return $tick !== '' ? $tick : $raw;
+}
+
 function mp_an_analyze($symbol_or_key, $mode = 'swing') {
     $mode = in_array($mode, array('intraday', 'swing', 'positional'), true) ? $mode : 'swing';
+    $symbol_or_key = mp_an_resolve_query($symbol_or_key);
     list($ysym, $label) = mp_candle_resolve($symbol_or_key);
     $ck = 'mp_an_' . md5($ysym . '|' . $mode . '|' . MP_AN_SNAP_VER);
     $cached = get_transient($ck);
@@ -5357,6 +5403,7 @@ add_shortcode('mp_analyzer', function ($atts) {
     $atts = shortcode_atts(array('symbol' => '', 'mode' => '', 'search' => '', 'related' => ''), $atts);
     $q = isset($_GET['q']) ? sanitize_text_field(wp_unslash($_GET['q'])) : '';
     $symbol = $atts['symbol'] !== '' ? $atts['symbol'] : $q;
+    if ($symbol !== '') $symbol = mp_an_resolve_query($symbol);
     $mode = isset($_GET['mode']) ? sanitize_key($_GET['mode']) : ($atts['mode'] ?: 'swing');
     if (!in_array($mode, array('intraday', 'swing', 'positional'), true)) $mode = 'swing';
 
