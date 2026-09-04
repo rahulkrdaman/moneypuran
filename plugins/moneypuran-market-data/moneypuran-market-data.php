@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.17.0
+ * Version: 1.18.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -4550,3 +4550,629 @@ add_action('admin_init', function () {
            . '<p class="description">Used only when the live NSE feed is unavailable. Paste the array from nseindia.com/reports/fii-dii.</p>';
     }, 'reading');
 });
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * AI STOCK ANALYZER — Phase 1 : deterministic quant + levels + patterns +
+ * market context + weighted scoring + snapshot store + REST.
+ * Layer 3 (the AI explanation) is added separately; this layer never guesses.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+const MP_AN_SNAP_VER = 1;
+
+/* ---- helpers on numeric series ---- */
+function mp_an_ema_series($vals, $p) {
+    $vals = array_values(array_filter($vals, function ($v) { return $v !== null; }));
+    $n = count($vals);
+    $out = array_fill(0, $n, null);
+    if ($n < $p) return $out;
+    $k = 2 / ($p + 1);
+    $seed = array_sum(array_slice($vals, 0, $p)) / $p;
+    $out[$p - 1] = $seed;
+    for ($i = $p; $i < $n; $i++) $out[$i] = ($vals[$i] - $out[$i - 1]) * $k + $out[$i - 1];
+    return $out;
+}
+function mp_an_ema($vals, $p) { $s = mp_an_ema_series($vals, $p); $v = end($s); return ($v === false || $v === null) ? null : $v; }
+function mp_an_last($arr) { $v = end($arr); return ($v === false || $v === null) ? null : $v; }
+function mp_an_sma($vals, $p) {
+    $vals = array_values($vals);
+    if (count($vals) < $p) return null;
+    return array_sum(array_slice($vals, -$p)) / $p;
+}
+function mp_an_stddev($vals) {
+    $n = count($vals); if ($n < 2) return 0;
+    $m = array_sum($vals) / $n;
+    $s = 0; foreach ($vals as $v) $s += ($v - $m) * ($v - $m);
+    return sqrt($s / $n);
+}
+function mp_an_slope($vals, $lookback = 10) {
+    $vals = array_values(array_filter($vals, function ($v) { return $v !== null; }));
+    $n = count($vals); if ($n < 3) return 0;
+    $lb = min($lookback, $n - 1);
+    $a = $vals[$n - 1 - $lb]; $b = $vals[$n - 1];
+    if ($a == 0) return 0;
+    return ($b - $a) / abs($a) * 100;
+}
+
+/* ---- indicators ---- */
+function mp_an_rsi($closes, $p = 14) {
+    $c = array_values($closes); $n = count($c);
+    if ($n <= $p) return null;
+    $gain = 0; $loss = 0;
+    for ($i = 1; $i <= $p; $i++) { $d = $c[$i] - $c[$i - 1]; if ($d >= 0) { $gain += $d; } else { $loss -= $d; } }
+    $ag = $gain / $p; $al = $loss / $p;
+    for ($i = $p + 1; $i < $n; $i++) {
+        $d = $c[$i] - $c[$i - 1];
+        $g = $d > 0 ? $d : 0; $l = $d < 0 ? -$d : 0;
+        $ag = ($ag * ($p - 1) + $g) / $p;
+        $al = ($al * ($p - 1) + $l) / $p;
+    }
+    if ($al == 0) return 100;
+    $rs = $ag / $al;
+    return round(100 - 100 / (1 + $rs), 1);
+}
+function mp_an_macd($closes, $fast = 12, $slow = 26, $sig = 9) {
+    $c = array_values(array_filter($closes, function ($v) { return $v !== null; }));
+    if (count($c) < $slow + $sig) return null;
+    $ef = mp_an_ema_series($c, $fast);
+    $es = mp_an_ema_series($c, $slow);
+    $line = array();
+    foreach ($c as $i => $_) $line[$i] = ($ef[$i] !== null && $es[$i] !== null) ? $ef[$i] - $es[$i] : null;
+    $sigS = mp_an_ema_series(array_values(array_filter($line, function ($v) { return $v !== null; })), $sig);
+    $macd = mp_an_last($line);
+    $signal = mp_an_last($sigS);
+    $prevLine = $line[count($line) - 2] ?? null;
+    return array(
+        'macd'   => $macd !== null ? round($macd, 3) : null,
+        'signal' => $signal !== null ? round($signal, 3) : null,
+        'hist'   => ($macd !== null && $signal !== null) ? round($macd - $signal, 3) : null,
+        'rising' => ($macd !== null && $prevLine !== null) ? ($macd > $prevLine) : null,
+        'state'  => ($macd !== null && $signal !== null) ? ($macd > $signal ? 'bullish' : 'bearish') : null,
+    );
+}
+function mp_an_adx($h, $l, $c, $p = 14) {
+    $h = array_values($h); $l = array_values($l); $c = array_values($c);
+    $n = count($c);
+    if ($n <= 2 * $p) return null;
+    $trs = array(); $pdm = array(); $ndm = array();
+    for ($i = 1; $i < $n; $i++) {
+        $tr = max($h[$i] - $l[$i], abs($h[$i] - $c[$i - 1]), abs($l[$i] - $c[$i - 1]));
+        $up = $h[$i] - $h[$i - 1]; $dn = $l[$i - 1] - $l[$i];
+        $trs[] = $tr;
+        $pdm[] = ($up > $dn && $up > 0) ? $up : 0;
+        $ndm[] = ($dn > $up && $dn > 0) ? $dn : 0;
+    }
+    $wilder = function ($arr, $p) {
+        $sm = array_sum(array_slice($arr, 0, $p));
+        $out = array($sm);
+        for ($i = $p; $i < count($arr); $i++) { $sm = $sm - $sm / $p + $arr[$i]; $out[] = $sm; }
+        return $out;
+    };
+    $tr14 = $wilder($trs, $p); $pdm14 = $wilder($pdm, $p); $ndm14 = $wilder($ndm, $p);
+    $dx = array();
+    for ($i = 0; $i < count($tr14); $i++) {
+        if ($tr14[$i] == 0) { $dx[] = 0; continue; }
+        $pdi = 100 * $pdm14[$i] / $tr14[$i];
+        $ndi = 100 * $ndm14[$i] / $tr14[$i];
+        $sum = $pdi + $ndi;
+        $dx[] = $sum == 0 ? 0 : 100 * abs($pdi - $ndi) / $sum;
+    }
+    if (count($dx) < $p) return null;
+    $adx = array_sum(array_slice($dx, 0, $p)) / $p;
+    for ($i = $p; $i < count($dx); $i++) $adx = ($adx * ($p - 1) + $dx[$i]) / $p;
+    $tr = end($tr14); $pdmL = end($pdm14); $ndmL = end($ndm14);
+    return array(
+        'adx'     => round($adx, 1),
+        'plusDI'  => $tr ? round(100 * $pdmL / $tr, 1) : null,
+        'minusDI' => $tr ? round(100 * $ndmL / $tr, 1) : null,
+    );
+}
+function mp_an_stoch_rsi($closes, $p = 14) {
+    $c = array_values($closes); $n = count($c);
+    if ($n < 3 * $p) return null;
+    $rsis = array();
+    for ($i = $p; $i < $n; $i++) $rsis[] = mp_an_rsi(array_slice($c, 0, $i + 1), $p);
+    $rsis = array_values(array_filter($rsis, function ($v) { return $v !== null; }));
+    if (count($rsis) < $p) return null;
+    $win = array_slice($rsis, -$p);
+    $mn = min($win); $mx = max($win);
+    $k = ($mx > $mn) ? round(($rsis[count($rsis) - 1] - $mn) / ($mx - $mn) * 100, 1) : 50;
+    return array('k' => $k);
+}
+function mp_an_cci($h, $l, $c, $p = 20) {
+    $h = array_values($h); $l = array_values($l); $c = array_values($c);
+    $n = count($c); if ($n < $p) return null;
+    $tp = array();
+    for ($i = 0; $i < $n; $i++) $tp[] = ($h[$i] + $l[$i] + $c[$i]) / 3;
+    $win = array_slice($tp, -$p);
+    $sma = array_sum($win) / $p;
+    $md = 0; foreach ($win as $v) $md += abs($v - $sma);
+    $md /= $p;
+    if ($md == 0) return 0;
+    return round(($tp[$n - 1] - $sma) / (0.015 * $md), 1);
+}
+function mp_an_obv($closes, $vols) {
+    $c = array_values($closes); $v = array_values($vols); $n = count($c);
+    if ($n < 10) return null;
+    $obv = 0; $series = array(0);
+    for ($i = 1; $i < $n; $i++) {
+        if ($c[$i] > $c[$i - 1]) $obv += $v[$i];
+        elseif ($c[$i] < $c[$i - 1]) $obv -= $v[$i];
+        $series[] = $obv;
+    }
+    return array('last' => $obv, 'slopePct' => round(mp_an_slope($series, 10), 1));
+}
+function mp_an_atr($h, $l, $c, $p = 14) {
+    $h = array_values($h); $l = array_values($l); $c = array_values($c);
+    $n = count($c); if ($n <= $p) return null;
+    $trs = array();
+    for ($i = 1; $i < $n; $i++) $trs[] = max($h[$i] - $l[$i], abs($h[$i] - $c[$i - 1]), abs($l[$i] - $c[$i - 1]));
+    $atr = array_sum(array_slice($trs, 0, $p)) / $p;
+    for ($i = $p; $i < count($trs); $i++) $atr = ($atr * ($p - 1) + $trs[$i]) / $p;
+    return round($atr, 2);
+}
+function mp_an_vwap($h, $l, $c, $vols) {
+    $h = array_values($h); $l = array_values($l); $c = array_values($c); $v = array_values($vols);
+    $pv = 0; $vv = 0;
+    for ($i = 0; $i < count($c); $i++) {
+        $tp = ($h[$i] + $l[$i] + $c[$i]) / 3;
+        $pv += $tp * $v[$i]; $vv += $v[$i];
+    }
+    return $vv > 0 ? round($pv / $vv, 2) : null;
+}
+
+/* ---- support / resistance ---- */
+function mp_an_levels($bars, $price) {
+    $n = count($bars);
+    if ($n < 20) return null;
+    $H = array_column($bars, 2); $L = array_column($bars, 3); $C = array_column($bars, 4);
+
+    // fractal swing points (2 bars each side)
+    $sw_hi = array(); $sw_lo = array();
+    for ($i = 2; $i < $n - 2; $i++) {
+        if ($H[$i] >= $H[$i - 1] && $H[$i] >= $H[$i - 2] && $H[$i] >= $H[$i + 1] && $H[$i] >= $H[$i + 2]) $sw_hi[] = $H[$i];
+        if ($L[$i] <= $L[$i - 1] && $L[$i] <= $L[$i - 2] && $L[$i] <= $L[$i + 1] && $L[$i] <= $L[$i + 2]) $sw_lo[] = $L[$i];
+    }
+    $recentHi = array_slice($sw_hi, -12);
+    $recentLo = array_slice($sw_lo, -12);
+
+    // classic pivots from the last completed bar (n-2; n-1 may still be forming)
+    $lb = $bars[$n - 2];
+    $p = ($lb[2] + $lb[3] + $lb[4]) / 3;
+    $piv = array(
+        'p'  => round($p, 2),
+        'r1' => round(2 * $p - $lb[3], 2), 'r2' => round($p + ($lb[2] - $lb[3]), 2),
+        's1' => round(2 * $p - $lb[2], 2), 's2' => round($p - ($lb[2] - $lb[3]), 2),
+    );
+
+    // fib retracement over the last major swing (highest high vs lowest low of last ~60 bars)
+    $win = array_slice($bars, -60);
+    $wh = max(array_column($win, 2)); $wl = min(array_column($win, 3));
+    $rng = $wh - $wl;
+    $fib = $rng > 0 ? array(
+        'high' => round($wh, 2), 'low' => round($wl, 2),
+        'f382' => round($wh - $rng * 0.382, 2),
+        'f5'   => round($wh - $rng * 0.5, 2),
+        'f618' => round($wh - $rng * 0.618, 2),
+    ) : null;
+
+    // assemble candidate levels, split by side of current price
+    $cand = array_merge($recentHi, $recentLo, array($piv['r1'], $piv['r2'], $piv['s1'], $piv['s2'], $lb[2], $lb[3]));
+    if ($fib) $cand = array_merge($cand, array($fib['f382'], $fib['f5'], $fib['f618']));
+    $res = array(); $sup = array();
+    foreach ($cand as $lvl) {
+        $lvl = round($lvl, 2);
+        if ($lvl > $price * 1.001) $res[] = $lvl;
+        elseif ($lvl < $price * 0.999) $sup[] = $lvl;
+    }
+    // dedupe within 0.4%
+    $dedupe = function ($arr, $asc) {
+        sort($arr);
+        if (!$asc) $arr = array_reverse($arr);
+        $out = array();
+        foreach ($arr as $v) {
+            $ok = true;
+            foreach ($out as $o) if (abs($v - $o) / max($o, 1) < 0.004) { $ok = false; break; }
+            if ($ok) $out[] = $v;
+        }
+        return $out;
+    };
+    $res = array_slice($dedupe($res, true), 0, 3);
+    $sup = array_slice($dedupe($sup, false), 0, 3);
+
+    return array(
+        'resistance' => $res,
+        'support'    => $sup,
+        'pivots'     => $piv,
+        'fib'        => $fib,
+        'nearestResistance' => $res ? $res[0] : null,
+        'nearestSupport'    => $sup ? $sup[0] : null,
+        'distResistancePct' => ($res && $price) ? round(($res[0] - $price) / $price * 100, 2) : null,
+        'distSupportPct'    => ($sup && $price) ? round(($price - $sup[0]) / $price * 100, 2) : null,
+    );
+}
+
+/* ---- candlestick patterns (last 1-3 bars, confluence only) ---- */
+function mp_an_patterns($bars) {
+    $n = count($bars); if ($n < 3) return array();
+    $b2 = $bars[$n - 3]; $b1 = $bars[$n - 2]; $b0 = $bars[$n - 1];
+    $o2 = $b2[1]; $h2 = $b2[2]; $l2 = $b2[3]; $c2 = $b2[4];
+    $o1 = $b1[1]; $h1 = $b1[2]; $l1 = $b1[3]; $c1 = $b1[4];
+    $o0 = $b0[1]; $h0 = $b0[2]; $l0 = $b0[3]; $c0 = $b0[4];
+    $body0 = abs($c0 - $o0); $rng0 = max($h0 - $l0, 0.0001);
+    $upper0 = $h0 - max($c0, $o0); $lower0 = min($c0, $o0) - $l0;
+    $out = array();
+    // Hammer / Shooting star
+    if ($body0 / $rng0 < 0.35 && $lower0 > 2 * $body0 && $upper0 < $body0) $out[] = array('name' => 'Hammer', 'dir' => 'bullish');
+    if ($body0 / $rng0 < 0.35 && $upper0 > 2 * $body0 && $lower0 < $body0) $out[] = array('name' => 'Shooting Star', 'dir' => 'bearish');
+    // Doji
+    if ($body0 / $rng0 < 0.1) $out[] = array('name' => 'Doji', 'dir' => 'neutral');
+    // Engulfing
+    if ($c1 < $o1 && $c0 > $o0 && $c0 >= $o1 && $o0 <= $c1) $out[] = array('name' => 'Bullish Engulfing', 'dir' => 'bullish');
+    if ($c1 > $o1 && $c0 < $o0 && $o0 >= $c1 && $c0 <= $o1) $out[] = array('name' => 'Bearish Engulfing', 'dir' => 'bearish');
+    // Piercing / Dark cloud
+    $mid1 = ($o1 + $c1) / 2;
+    if ($c1 < $o1 && $o0 < $l1 && $c0 > $mid1 && $c0 < $o1) $out[] = array('name' => 'Piercing Line', 'dir' => 'bullish');
+    if ($c1 > $o1 && $o0 > $h1 && $c0 < $mid1 && $c0 > $o1) $out[] = array('name' => 'Dark Cloud Cover', 'dir' => 'bearish');
+    // Morning / Evening star
+    if ($o2 !== null && $c2 !== null) {
+        $sm1 = abs($c1 - $o1) < abs($c2 - $o2) * 0.5;
+        if ($c2 < $o2 && $sm1 && $c0 > $o0 && $c0 > ($o2 + $c2) / 2) $out[] = array('name' => 'Morning Star', 'dir' => 'bullish');
+        if ($c2 > $o2 && $sm1 && $c0 < $o0 && $c0 < ($o2 + $c2) / 2) $out[] = array('name' => 'Evening Star', 'dir' => 'bearish');
+    }
+    return $out;
+}
+
+/* ---- market context + regime + sector relative strength ---- */
+function mp_an_context($sym) {
+    $scn = function_exists('mp_md_screener_scenario') ? mp_md_screener_scenario() : array();
+    $niftyChg = $scn['niftyChg'] ?? null;
+    $vix = isset($scn['vix']['level']) ? $scn['vix']['level'] : null;
+    $usMean = null;
+    $g = $scn['global'] ?? array();
+    $tmp = array();
+    foreach (array('dow', 'nasdaq', 'sp500') as $k) if (isset($g[$k]['chg']) && $g[$k]['chg'] !== null) $tmp[] = $g[$k]['chg'];
+    if ($tmp) $usMean = array_sum($tmp) / count($tmp);
+
+    $regime = 'neutral';
+    $pts = 0;
+    if ($niftyChg !== null) $pts += ($niftyChg > 0.3 ? 1 : ($niftyChg < -0.3 ? -1 : 0));
+    if ($usMean !== null)   $pts += ($usMean > 0.3 ? 1 : ($usMean < -0.3 ? -1 : 0));
+    if ($vix !== null)       $pts += ($vix < 14 ? 1 : ($vix > 20 ? -1 : 0));
+    if ($pts >= 2) $regime = 'risk-on';
+    elseif ($pts <= -2) $regime = 'risk-off';
+
+    // sector RS: stock 1m return vs sector index 1m return vs nifty 1m
+    $rs = null; $secName = null; $secChg1m = null; $stkChg1m = null;
+    $flat = function_exists('mp_md_stock_universe_flat') ? mp_md_stock_universe_flat() : array();
+    if (isset($flat[$sym])) {
+        $secName = $flat[$sym]['sector'];
+        $secKey = function_exists('mp_md_sector_candle_key') ? mp_md_sector_candle_key($flat[$sym]['secIndex']) : 'nifty';
+        $sb = mp_candle_ohlc($secKey, '1D')['bars'] ?? array();
+        $kb = mp_candle_ohlc($sym, '1D')['bars'] ?? array();
+        $r1m = function ($b) {
+            $c = array_column($b, 4); $n = count($c);
+            return ($n > 22 && $c[$n - 22] != 0) ? ($c[$n - 1] - $c[$n - 22]) / $c[$n - 22] * 100 : null;
+        };
+        $secChg1m = $sb ? $r1m($sb) : null;
+        $stkChg1m = $kb ? $r1m($kb) : null;
+        if ($stkChg1m !== null && $secChg1m !== null) $rs = round($stkChg1m - $secChg1m, 1);
+    }
+
+    return array(
+        'niftyChg'  => $niftyChg,
+        'vix'       => $vix,
+        'regime'    => $regime,
+        'usLine'    => $scn['usLine'] ?? null,
+        'crudeLine' => $scn['crudeLine'] ?? null,
+        'inrLine'   => $scn['inrLine'] ?? null,
+        'sector'    => $secName,
+        'sectorRS1m' => $rs,
+        'stockChg1m' => $stkChg1m !== null ? round($stkChg1m, 1) : null,
+        'sectorChg1m' => $secChg1m !== null ? round($secChg1m, 1) : null,
+    );
+}
+
+/* ---- scoring config (weights + bands) ---- */
+function mp_an_scoring_config() {
+    return apply_filters('mp_an_scoring_config', array(
+        'weights' => array(
+            'trend' => 20, 'momentum' => 15, 'volume' => 10, 'levels' => 10,
+            'fo' => 20, 'market' => 10, 'sector' => 5, 'news' => 5, 'fundamentals' => 5,
+        ),
+        'modeWeights' => array(
+            'intraday'   => array('trend' => 15, 'momentum' => 20, 'volume' => 15, 'levels' => 15, 'fo' => 15, 'market' => 15, 'sector' => 3, 'news' => 2, 'fundamentals' => 0),
+            'positional' => array('trend' => 22, 'momentum' => 10, 'volume' => 6,  'levels' => 8,  'fo' => 10, 'market' => 12, 'sector' => 8, 'news' => 6, 'fundamentals' => 18),
+        ),
+        'bands' => array(
+            array(80, 'BULLISH'), array(65, 'MODERATELY_BULLISH'),
+            array(45, 'NEUTRAL'), array(30, 'MODERATELY_BEARISH'), array(0, 'BEARISH'),
+        ),
+    ));
+}
+function mp_an_view_for_score($score) {
+    foreach (mp_an_scoring_config()['bands'] as $b) if ($score >= $b[0]) return $b[1];
+    return 'NEUTRAL';
+}
+
+/* ---- factor scores from computed data (0-100, 50 = neutral) ---- */
+function mp_an_factor_scores($tech, $levels, $ctx, $quote, $bars) {
+    $clamp = function ($v) { return max(0, min(100, $v)); };
+    $lastBar = end($bars);
+    $price = $quote['price'] ?? (is_array($lastBar) ? ($lastBar[4] ?? null) : null);
+    $C = array_column($bars, 4);
+    $chg = $quote['chgPct'] ?? null;
+    $f = array();
+
+    // trend
+    $t = 50;
+    if ($price !== null) {
+        foreach (array('ema20' => 12, 'ema50' => 10, 'ema200' => 10) as $k => $w) {
+            if (!empty($tech[$k])) $t += ($price > $tech[$k] ? $w : -$w);
+        }
+    }
+    if (!empty($tech['ema20']) && !empty($tech['ema50']) && !empty($tech['ema200'])) {
+        if ($tech['ema20'] > $tech['ema50'] && $tech['ema50'] > $tech['ema200']) $t += 8;
+        elseif ($tech['ema20'] < $tech['ema50'] && $tech['ema50'] < $tech['ema200']) $t -= 8;
+    }
+    $f['trend'] = $clamp($t);
+
+    // momentum
+    $m = 50; $has = false;
+    if (isset($tech['rsi'])) {
+        $has = true; $r = $tech['rsi'];
+        if ($r >= 70) $m += 12; elseif ($r >= 55) $m += 16; elseif ($r <= 30) $m -= 20; elseif ($r <= 45) $m -= 12;
+    }
+    if (!empty($tech['macd']['state'])) { $has = true; $m += ($tech['macd']['state'] === 'bullish' ? 10 : -10); if (!empty($tech['macd']['rising'])) $m += 5; }
+    if (isset($tech['adx']['adx']) && $tech['adx']['adx'] >= 25 && isset($tech['adx']['plusDI'], $tech['adx']['minusDI'])) {
+        $has = true; $m += ($tech['adx']['plusDI'] > $tech['adx']['minusDI'] ? 10 : -10);
+    }
+    $f['momentum'] = $has ? $clamp($m) : null;
+
+    // volume
+    $v = 50; $hv = false;
+    if (isset($tech['relVol']) && $chg !== null) {
+        $hv = true;
+        if ($tech['relVol'] >= 1.5) $v += ($chg >= 0 ? 15 : -15);
+        elseif ($tech['relVol'] < 0.7) $v -= 4;
+    }
+    if (isset($tech['obv']['slopePct'])) { $hv = true; $v += max(-12, min(12, $tech['obv']['slopePct'] * 1.5)); }
+    $f['volume'] = $hv ? $clamp($v) : null;
+
+    // levels — room to run vs hugging resistance
+    $lv = 50;
+    if ($levels && $levels['distResistancePct'] !== null && $levels['distSupportPct'] !== null) {
+        $dr = $levels['distResistancePct']; $ds = $levels['distSupportPct'];
+        if ($dr + $ds > 0) $lv = 50 + (($dr - $ds) / ($dr + $ds)) * 22;
+        // fresh breakout: price just above a former resistance (last bar low < nearestSupport-ish)
+    }
+    $f['levels'] = $clamp($lv);
+
+    // market
+    $mk = array('risk-on' => 64, 'neutral' => 50, 'risk-off' => 36)[$ctx['regime']] ?? 50;
+    if ($ctx['niftyChg'] !== null) $mk += max(-8, min(8, $ctx['niftyChg'] * 4));
+    $f['market'] = $clamp($mk);
+
+    // sector
+    $f['sector'] = ($ctx['sectorRS1m'] === null) ? null : $clamp(50 + max(-25, min(25, $ctx['sectorRS1m'] * 2.5)));
+
+    // news / fundamentals — Phase 1 stubs (real in later layers)
+    $f['news'] = null;
+    $f['fundamentals'] = null;
+    $f['fo'] = null; // Phase 2
+
+    return $f;
+}
+
+/* ---- weighted score + confidence ---- */
+function mp_an_score($factors, $mode, $vix) {
+    $cfg = mp_an_scoring_config();
+    $w = $cfg['weights'];
+    if ($mode !== 'swing' && isset($cfg['modeWeights'][$mode])) $w = $cfg['modeWeights'][$mode];
+
+    $num = 0; $den = 0; $present = array();
+    foreach ($w as $k => $weight) {
+        if (!isset($factors[$k]) || $factors[$k] === null || $weight <= 0) continue;
+        $num += $factors[$k] * $weight;
+        $den += $weight;
+        $present[] = $factors[$k];
+    }
+    $score = $den > 0 ? round($num / $den) : 50;
+    $view  = mp_an_view_for_score($score);
+
+    // confidence
+    $scored = 0; $total = 0;
+    foreach ($w as $k => $weight) { if ($weight > 0) { $total++; if (isset($factors[$k]) && $factors[$k] !== null) $scored++; } }
+    $completeness = $total ? $scored / $total : 0;
+    $agreement = count($present) >= 2 ? max(0, 1 - mp_an_stddev($present) / 32) : 0.4;
+    $conf = (0.4 * $agreement + 0.45 * $completeness + 0.15) * 100;
+    if ($vix !== null) { if ($vix > 25) $conf -= 18; elseif ($vix > 20) $conf -= 10; }
+    $conf = (int) round(max(25, min(92, $conf)));
+
+    return array('score' => (int) $score, 'view' => $view, 'confidence' => $conf, 'weightsUsed' => $w);
+}
+
+/* ---- scenarios from computed levels ---- */
+function mp_an_scenarios($price, $levels, $atr) {
+    if (!$levels) return null;
+    $nr = $levels['nearestResistance']; $ns = $levels['nearestSupport'];
+    $r2 = $levels['resistance'][1] ?? ($nr !== null ? round($nr * 1.02, 2) : null);
+    $s2 = $levels['support'][1] ?? ($ns !== null ? round($ns * 0.98, 2) : null);
+    $fmt = function ($a, $b) { return $a !== null && $b !== null ? number_format($a, 2) . '-' . number_format($b, 2) : ($a !== null ? number_format($a, 2) : 'n/a'); };
+    return array(
+        'bullish' => array(
+            'condition'  => $nr !== null ? ('Sustained close above ' . number_format($nr, 2) . ' with above-average volume') : 'A decisive breakout above nearby resistance',
+            'targetZone' => $fmt($nr !== null ? round($nr * 1.005, 2) : null, $r2),
+        ),
+        'neutral' => array(
+            'condition' => ($ns !== null && $nr !== null) ? ('Price holds the ' . number_format($ns, 2) . '-' . number_format($nr, 2) . ' range') : 'Price consolidates around current levels',
+        ),
+        'bearish' => array(
+            'condition'  => $ns !== null ? ('Break below ' . number_format($ns, 2) . ' with follow-through selling') : 'A breakdown below nearby support',
+            'targetZone' => $fmt($s2, $ns !== null ? round($ns * 0.995, 2) : null),
+        ),
+    );
+}
+
+/* ════ orchestrator ════ */
+function mp_an_mode_tf($mode) {
+    return array('intraday' => '15m', 'swing' => '1D', 'positional' => '1W')[$mode] ?? '1D';
+}
+function mp_an_analyze($symbol_or_key, $mode = 'swing') {
+    $mode = in_array($mode, array('intraday', 'swing', 'positional'), true) ? $mode : 'swing';
+    list($ysym, $label) = mp_candle_resolve($symbol_or_key);
+    $ck = 'mp_an_' . md5($ysym . '|' . $mode . '|' . MP_AN_SNAP_VER);
+    $cached = get_transient($ck);
+    if (is_array($cached)) return $cached;
+
+    $tf = mp_an_mode_tf($mode);
+    $d  = mp_candle_ohlc($symbol_or_key, $tf);
+    $bars = $d['bars'] ?? array();
+    if (count($bars) < 30) {
+        return array('ok' => false, 'symbol' => $ysym, 'label' => $label, 'reason' => 'Not enough price history for ' . $label . '.');
+    }
+    $isIndex = (strpos($ysym, '^') === 0);
+    $isNseStock = (substr($ysym, -3) === '.NS');
+
+    $C = array_column($bars, 4); $H = array_column($bars, 2); $L = array_column($bars, 3); $V = array_column($bars, 5);
+    $quote = mp_md_yahoo_one($ysym);
+    $price = $quote['price'] ?? end($C);
+    $prev  = $quote['prev'] ?? ($C[count($C) - 2] ?? null);
+
+    $vol20 = mp_an_sma($V, 20);
+    $tech = array(
+        'ema20'  => mp_an_ema($C, 20)  ? round(mp_an_ema($C, 20), 2)  : null,
+        'ema50'  => mp_an_ema($C, 50)  ? round(mp_an_ema($C, 50), 2)  : null,
+        'ema200' => mp_an_ema($C, 200) ? round(mp_an_ema($C, 200), 2) : null,
+        'sma20'  => mp_an_sma($C, 20)  ? round(mp_an_sma($C, 20), 2)  : null,
+        'sma50'  => mp_an_sma($C, 50)  ? round(mp_an_sma($C, 50), 2)  : null,
+        'sma200' => mp_an_sma($C, 200) ? round(mp_an_sma($C, 200), 2) : null,
+        'rsi'    => mp_an_rsi($C, 14),
+        'macd'   => mp_an_macd($C),
+        'adx'    => mp_an_adx($H, $L, $C, 14),
+        'stochRsi' => mp_an_stoch_rsi($C, 14),
+        'cci'    => mp_an_cci($H, $L, $C, 20),
+        'obv'    => mp_an_obv($C, $V),
+        'atr'    => mp_an_atr($H, $L, $C, 14),
+        'relVol' => ($vol20 && $vol20 > 0) ? round($V[count($V) - 1] / $vol20, 2) : null,
+        'vwap'   => ($mode === 'intraday') ? mp_an_vwap($H, $L, $C, $V) : null,
+    );
+    // golden / death cross (50 vs 200 SMA over last ~5 bars)
+    $tech['cross'] = null;
+    if (count($C) > 205) {
+        $s50a = mp_an_sma(array_slice($C, 0, -5), 50); $s200a = mp_an_sma(array_slice($C, 0, -5), 200);
+        if ($s50a && $s200a && $tech['sma50'] && $tech['sma200']) {
+            if ($s50a <= $s200a && $tech['sma50'] > $tech['sma200']) $tech['cross'] = 'golden';
+            elseif ($s50a >= $s200a && $tech['sma50'] < $tech['sma200']) $tech['cross'] = 'death';
+        }
+    }
+
+    $levels = mp_an_levels($bars, $price);
+    $patterns = mp_an_patterns($bars);
+    $ctx = mp_an_context($ysym);
+    $factors = mp_an_factor_scores($tech, $levels, $ctx, $quote ?: array('price' => $price, 'chgPct' => null), $bars);
+    if (!$isNseStock) { $factors['sector'] = null; }
+    $scored = mp_an_score($factors, $mode, $ctx['vix']);
+    $scenarios = mp_an_scenarios($price, $levels, $tech['atr']);
+
+    $chg1y = ($C[0] != 0) ? round(($price - $C[0]) / $C[0] * 100, 1) : null;
+    $chg1m = (count($C) > 22 && $C[count($C) - 22] != 0) ? round(($price - $C[count($C) - 22]) / $C[count($C) - 22] * 100, 1) : null;
+
+    $out = array(
+        'ok'        => true,
+        'symbol'    => $ysym,
+        'label'     => $label,
+        'exchange'  => $isNseStock ? 'NSE' : ($isIndex ? 'Index' : ''),
+        'mode'      => $mode,
+        'price'     => $price !== null ? round($price, 2) : null,
+        'change'    => ($price !== null && $prev !== null) ? round($price - $prev, 2) : null,
+        'changePct' => ($price !== null && $prev) ? round(($price - $prev) / $prev * 100, 2) : null,
+        'chg1m'     => $chg1m,
+        'chg1y'     => $chg1y,
+        'view'      => $scored['view'],
+        'confidence' => $scored['confidence'],
+        'score'     => $scored['score'],
+        'factorScores' => $factors,
+        'weightsUsed'  => $scored['weightsUsed'],
+        'technical' => $tech,
+        'levels'    => $levels,
+        'patterns'  => $patterns,
+        'context'   => $ctx,
+        'scenarios' => $scenarios,
+        'fo'        => null,   // Phase 2
+        'fundamentals' => null, // Phase 1.5
+        'ai'        => null,   // Layer 3 attaches here
+        'dataMeta'  => array('source' => 'Yahoo v8', 'asOf' => gmdate('c'), 'bars' => count($bars), 'tf' => $tf, 'quoteLive' => (bool) $quote),
+        'disclaimer' => 'Analysis and educational information based on delayed market data. Not personalised investment advice. Consult a SEBI-registered adviser before investing.',
+    );
+
+    mp_an_snapshot($out);
+    set_transient($ck, $out, ($mode === 'intraday' ? 3 : 12) * MINUTE_IN_SECONDS);
+    return $out;
+}
+
+/* ---- snapshot store (accuracy tracking, §30) ---- */
+function mp_an_table_name() { global $wpdb; return $wpdb->prefix . 'mp_analysis_snapshots'; }
+function mp_an_install_table() {
+    if ((int) get_option('mp_an_snap_installed') === MP_AN_SNAP_VER) return;
+    global $wpdb;
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    $t = mp_an_table_name();
+    $charset = $wpdb->get_charset_collate();
+    dbDelta("CREATE TABLE $t (
+        id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+        symbol varchar(32) NOT NULL,
+        mode varchar(16) NOT NULL,
+        ts datetime NOT NULL,
+        price decimal(14,2) DEFAULT NULL,
+        av_view varchar(24) DEFAULT NULL,
+        confidence tinyint(3) unsigned DEFAULT NULL,
+        score tinyint(3) unsigned DEFAULT NULL,
+        factor_scores longtext,
+        support varchar(255) DEFAULT NULL,
+        resistance varchar(255) DEFAULT NULL,
+        regime varchar(16) DEFAULT NULL,
+        ai_json longtext,
+        data_meta longtext,
+        PRIMARY KEY  (id),
+        KEY symbol_ts (symbol,ts)
+    ) $charset;");
+    update_option('mp_an_snap_installed', MP_AN_SNAP_VER);
+}
+add_action('init', 'mp_an_install_table', 1);
+
+function mp_an_snapshot($a) {
+    if (empty($a['ok'])) return;
+    global $wpdb;
+    // one row per (symbol, mode) per hour — don't flood
+    $t = mp_an_table_name();
+    $since = gmdate('Y-m-d H:i:s', time() - 3300);
+    $recent = $wpdb->get_var($wpdb->prepare("SELECT id FROM $t WHERE symbol=%s AND mode=%s AND ts>%s LIMIT 1", $a['symbol'], $a['mode'], $since));
+    if ($recent) return;
+    $wpdb->insert($t, array(
+        'symbol' => $a['symbol'], 'mode' => $a['mode'], 'ts' => gmdate('Y-m-d H:i:s'),
+        'price' => $a['price'], 'av_view' => $a['view'], 'confidence' => $a['confidence'], 'score' => $a['score'],
+        'factor_scores' => wp_json_encode($a['factorScores']),
+        'support' => implode(',', $a['levels']['support'] ?? array()),
+        'resistance' => implode(',', $a['levels']['resistance'] ?? array()),
+        'regime' => $a['context']['regime'] ?? null,
+        'ai_json' => $a['ai'] ? wp_json_encode($a['ai']) : null,
+        'data_meta' => wp_json_encode($a['dataMeta']),
+    ));
+}
+
+/* ---- REST ---- */
+add_action('rest_api_init', function () {
+    register_rest_route('mp/v1', '/analysis', array(
+        'methods' => 'GET', 'permission_callback' => '__return_true',
+        'args' => array('symbol' => array('required' => true), 'mode' => array('default' => 'swing')),
+        'callback' => function (WP_REST_Request $req) {
+            $sym = sanitize_text_field($req->get_param('symbol'));
+            $mode = sanitize_key($req->get_param('mode'));
+            if ($sym === '') return new WP_Error('mp_no_symbol', 'symbol is required', array('status' => 400));
+            $res = rest_ensure_response(mp_an_analyze($sym, $mode));
+            $res->header('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=120');
+            return $res;
+        },
+    ));
+});
+
