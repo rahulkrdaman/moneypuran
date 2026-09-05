@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.30.0
+ * Version: 1.30.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1103,7 +1103,7 @@ function mp_md_evergreen_page_ids() {
     $ids = get_transient('mp_md_evergreen_ids');
     if (is_array($ids)) return $ids;
     $slugs = array(
-        'stock-analysis', 'gold-rate', 'silver-rate', 'gold-rates', 'fuel-prices', 'commodities', 'charts', 'fii-dii-data',
+        'stock-analysis', 'gold-rate', 'silver-rate', 'gold-rates', 'fuel-prices', 'commodities', 'charts', 'fii-dii-data', 'ipo',
         'why-market-moved-today', 'markets/why-market-moved-today', 'markets', 'india-market-today', 'nifty-50', 'sensex', 'bank-nifty',
         'stocks', 'sector', 'top-gainers-today', 'top-losers-today',
         '52-week-high-stocks', '52-week-low-stocks',
@@ -1167,6 +1167,7 @@ function mp_md_quick_tools() {
         'Commodities'       => '/commodities/',
         'Live Charts'       => '/charts/',
         'FII / DII'         => '/fii-dii-data/',
+        'IPO Calendar'      => '/ipo/',
         'Nifty 50'          => '/nifty-50/',
         'Top Gainers'       => '/top-gainers-today/',
         'Why Market Moved'  => '/markets/why-market-moved-today/',
@@ -7114,7 +7115,7 @@ add_filter('rank_math/frontend/robots', function ($robots) {
     if (!empty($t['citySlug'])) {
         $rec = mp_comm_lookup($t['citySlug']);
         if ($rec && empty($rec[8])) {  // long-tail city: keep out of the index, follow links
-            $robots['index'] = 'noindex';
+            unset($robots['index']);
             $robots['noindex'] = 'noindex';
             return $robots;
         }
