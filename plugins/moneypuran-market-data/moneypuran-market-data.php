@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.31.1
+ * Version: 1.31.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -6552,6 +6552,10 @@ function mp_comm_data($metal, $citySlug = '') {
 function mp_comm_metal_label($metal) {
     return $metal === 'silver' ? 'Silver' : ($metal === 'platinum' ? 'Platinum' : 'Gold');
 }
+/* Weak / large-denomination currencies show whole numbers; the rest 2dp. */
+function mp_comm_ccy_decimals($ccy) {
+    return in_array(strtoupper((string) $ccy), array('INR', 'PKR', 'LKR', 'NPR', 'BDT', 'BTN', 'IDR', 'VND', 'TRY', 'JPY'), true) ? 0 : 2;
+}
 
 function mp_comm_data_build($metal, $citySlug = '') {
     $rec = $citySlug ? mp_comm_lookup($citySlug) : null;
@@ -6560,7 +6564,7 @@ function mp_comm_data_build($metal, $citySlug = '') {
     $ccy     = $rec ? $rec[5] : 'INR';
     $sym     = $rec ? $rec[6] : '&#8377;';
     $premPct = $rec ? (float) $rec[7] : 0.0;
-    $decimals = ($ccy === 'INR') ? 0 : 2;
+    $decimals = mp_comm_ccy_decimals($ccy);
 
     $grp = get_transient(MP_MD_GRP_KEY);
     $b   = is_array($grp) && !empty($grp['bullion_inr']) ? $grp['bullion_inr'] : null;
@@ -6691,7 +6695,7 @@ function mp_comm_faq($metal, $citySlug = '') {
     $where = $cityDisplay !== 'India' ? (' in ' . $cityDisplay) : ' in India';
     $d = mp_comm_data($metal, $citySlug);
     $sy = $d ? html_entity_decode($d['symbol']) : "\xE2\x82\xB9";
-    $dec = ($d && $d['currency'] !== 'INR') ? 2 : 0;
+    $dec = $d ? mp_comm_ccy_decimals($d['currency']) : 0;
     $ref = '';
     if ($d) {
         if ($metal === 'silver') {
@@ -6740,7 +6744,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
     if (!$d) return '<p>' . esc_html($M) . ' rate data is loading — please refresh in a moment.</p>';
 
     $SY  = $d['symbol'];
-    $DEC = ($d['currency'] === 'INR') ? 0 : 2;
+    $DEC = mp_comm_ccy_decimals($d['currency']);
     $hub = mp_comm_hub_slugs()[$metal];
     $featured = mp_comm_cities();
     $allSlugs = mp_comm_all_slugs();
@@ -6904,7 +6908,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
   <h2><?php echo $citySlug ? esc_html($M) . ' rate in ' . esc_html($whereLabel) . ' &mdash; local context' : 'How the ' . esc_html(strtolower($M)) . ' rate in India is set'; ?></h2>
   <?php if ($citySlug && $d['isIntl']) : ?>
     <p><?php echo wp_kses_post($d['cityNote']); ?></p>
-    <p>The figures above are the international <?php echo esc_html(strtolower($M)); ?> price converted to <?php echo esc_html($d['currency']); ?> at today&rsquo;s exchange rate. They do <em>not</em> include India&rsquo;s import duty or GST, so they are lower than the equivalent rate inside India. Local dealers in <?php echo esc_html($cityDisplay); ?> add their own small premium and, where applicable, VAT/GST on jewellery making.</p>
+    <p>The figures above are the international <?php echo esc_html(strtolower($M)); ?> price converted to <?php echo esc_html($d['currency']); ?> at today&rsquo;s exchange rate. They do <em>not</em> include local import duty, VAT or GST, so the price at a jeweller in <?php echo esc_html($cityDisplay); ?> is typically higher &mdash; by a few percent in the low-tax Gulf markets, and by 10&ndash;20% in markets with a heavy duty such as Nepal, Bangladesh or Pakistan.</p>
   <?php elseif ($citySlug && !empty($d['cityNote'])) : ?>
     <p><?php echo wp_kses_post($d['cityNote']); ?></p>
     <p>GST on <?php echo esc_html(strtolower($M)); ?> is a uniform <strong>3%</strong> across <?php echo esc_html($d['cityState']); ?> and the rest of India, so the price you pay in <?php echo esc_html($cityDisplay); ?> differs from other cities mainly by the local retail premium jewellers apply over the IBJA benchmark and by making-charge conventions &mdash; typically 1&ndash;2% on the metal value.</p>
