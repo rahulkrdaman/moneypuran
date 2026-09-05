@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.29.0
+ * Version: 1.29.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1545,13 +1545,56 @@ add_shortcode('mp_ticker_block', function () {
  * ==========================================================================*/
 
 function mp_rates_cities() {
-    return array(
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    $base = array(
         'Mumbai', 'Delhi', 'Bengaluru', 'Hyderabad', 'Chennai', 'Kolkata', 'Ahmedabad',
         'Pune', 'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Bhopal', 'Patna',
         'Surat', 'Vadodara', 'Chandigarh', 'Coimbatore', 'Kochi', 'Visakhapatnam',
         'Bhubaneswar', 'Guwahati', 'Ranchi', 'Raipur', 'Dehradun', 'Ludhiana',
         'Madurai', 'Mysuru', 'Varanasi',
     );
+    if (function_exists('mp_comm_india_ext')) {
+        foreach (mp_comm_india_ext() as $x) $base[] = $x[0];
+    }
+    $base = array_values(array_unique($base));
+    sort($base);
+    $cache = $base;
+    return $cache;
+}
+/* City -> Indian state (for deriving fuel prices where we have no direct quote). */
+function mp_fuel_city_state($city) {
+    static $map = null;
+    if ($map === null) {
+        $map = array(
+            'Mumbai'=>'Maharashtra','Delhi'=>'Delhi','Bengaluru'=>'Karnataka','Hyderabad'=>'Telangana',
+            'Chennai'=>'Tamil Nadu','Kolkata'=>'West Bengal','Ahmedabad'=>'Gujarat','Pune'=>'Maharashtra',
+            'Jaipur'=>'Rajasthan','Lucknow'=>'Uttar Pradesh','Kanpur'=>'Uttar Pradesh','Nagpur'=>'Maharashtra',
+            'Indore'=>'Madhya Pradesh','Bhopal'=>'Madhya Pradesh','Patna'=>'Bihar','Surat'=>'Gujarat',
+            'Vadodara'=>'Gujarat','Chandigarh'=>'Chandigarh','Coimbatore'=>'Tamil Nadu','Kochi'=>'Kerala',
+            'Visakhapatnam'=>'Andhra Pradesh','Bhubaneswar'=>'Odisha','Guwahati'=>'Assam','Ranchi'=>'Jharkhand',
+            'Raipur'=>'Chhattisgarh','Dehradun'=>'Uttarakhand','Ludhiana'=>'Punjab','Madurai'=>'Tamil Nadu',
+            'Mysuru'=>'Karnataka','Varanasi'=>'Uttar Pradesh',
+        );
+        if (function_exists('mp_comm_india_ext')) {
+            foreach (mp_comm_india_ext() as $x) if (!isset($map[$x[0]])) $map[$x[0]] = $x[1];
+        }
+    }
+    return isset($map[$city]) ? $map[$city] : '';
+}
+/* State -> a city we hold a real curated quote for. */
+function mp_fuel_state_ref($state) {
+    $r = array(
+        'Maharashtra'=>'Mumbai','Delhi'=>'Delhi','Karnataka'=>'Bengaluru','Telangana'=>'Hyderabad',
+        'Tamil Nadu'=>'Chennai','West Bengal'=>'Kolkata','Gujarat'=>'Ahmedabad','Rajasthan'=>'Jaipur',
+        'Uttar Pradesh'=>'Lucknow','Madhya Pradesh'=>'Indore','Bihar'=>'Patna','Chandigarh'=>'Chandigarh',
+        'Kerala'=>'Kochi','Andhra Pradesh'=>'Visakhapatnam','Odisha'=>'Bhubaneswar','Assam'=>'Guwahati',
+        'Jharkhand'=>'Ranchi','Chhattisgarh'=>'Raipur','Uttarakhand'=>'Dehradun','Punjab'=>'Ludhiana',
+        'Haryana'=>'Delhi','Goa'=>'Mumbai','Himachal Pradesh'=>'Chandigarh','Jammu & Kashmir'=>'Chandigarh',
+        'Tripura'=>'Guwahati','Manipur'=>'Guwahati','Meghalaya'=>'Guwahati','Mizoram'=>'Guwahati',
+        'Nagaland'=>'Guwahati','Arunachal Pradesh'=>'Guwahati','Sikkim'=>'Kolkata',
+    );
+    return isset($r[$state]) ? $r[$state] : 'Mumbai';
 }
 function mp_rates_norm_city($c) {
     $c = ucwords(strtolower(trim((string) $c)));
@@ -1621,14 +1664,30 @@ function mp_rates_fuel_default() {
 function mp_rates_fuel($city = 'Mumbai') {
     $data = get_option('mp_fuel_rates');
     if (!is_array($data) || empty($data['cities'])) $data = mp_rates_fuel_default();
-    $c = isset($data['cities'][$city]) ? $data['cities'][$city] : $data['cities']['Mumbai'];
+
+    $derived = false; $refCity = $city;
+    if (isset($data['cities'][$city])) {
+        $c = $data['cities'][$city];
+    } else {
+        // No direct quote - use the state's reference city (prices are near-uniform within a state).
+        $state = function_exists('mp_fuel_city_state') ? mp_fuel_city_state($city) : '';
+        $refCity = function_exists('mp_fuel_state_ref') ? mp_fuel_state_ref($state) : 'Mumbai';
+        if (!isset($data['cities'][$refCity])) $refCity = 'Mumbai';
+        $c = $data['cities'][$refCity];
+        $derived = true;
+    }
+    $note = 'Pump prices are set daily by the oil marketing companies and vary by a few paise within a city (local body tax). Figures are indicative; confirm at the pump.';
+    if ($derived) $note = $city . ' is not separately listed - showing the ' . $refCity . ' rate as the state reference. Petrol and diesel prices are near-uniform within a state; the difference between towns is usually a few paise. ' . $note;
+
     return array(
         'city'    => $city,
         'petrol'  => isset($c[0]) ? (float) $c[0] : null,
         'diesel'  => isset($c[1]) ? (float) $c[1] : null,
         'updated' => isset($data['updated']) ? $data['updated'] : gmdate('Y-m-d'),
         'all'     => $data['cities'],
-        'note'    => 'Pump prices are set daily by oil marketing companies and vary within a city. Figures are indicative; check at the pump.',
+        'derived' => $derived,
+        'ref_city'=> $refCity,
+        'note'    => $note,
     );
 }
 add_action('init', function () {
@@ -1906,7 +1965,7 @@ add_shortcode('mp_fuel_prices', function ($atts) {
       <?php endforeach; ?>
     </tbody>
   </table>
-  <p class="mp-rates__disc"><?php echo esc_html($f['note']); ?></p>
+  <p class="mp-rates__disc" data-role="note"><?php echo esc_html($f['note']); ?></p>
 </div>
 <script>
 (function(){
@@ -1933,6 +1992,7 @@ add_shortcode('mp_fuel_prices', function ($atts) {
         setCityLabel(d.city);
         W.querySelector('[data-role=petrol]').textContent = '₹'+Number(d.fuel.petrol).toFixed(2);
         W.querySelector('[data-role=diesel]').textContent = '₹'+Number(d.fuel.diesel).toFixed(2);
+        var nt = W.querySelector('[data-role=note]'); if(nt && d.fuel.note) nt.textContent = d.fuel.note;
       }).catch(function(){});
   }
   sel.addEventListener('change', function(){ setCityLabel(sel.value); window.mpRatesSetCity(sel.value); load(sel.value); });
@@ -7936,4 +7996,28 @@ function mp_comm_is_indexed($slug) {
 /* All resolvable city slugs (for the search modal). */
 function mp_comm_all_slugs() {
     return array_merge(array_keys(mp_comm_cities()), array_keys(mp_comm_india_ext()), array_keys(mp_comm_intl()));
+}
+
+/* ============================================================================
+ * CONTEXT-AWARE SIDEBAR (v1.29.1)  [request 2]
+ *   Commodity pages -> gold/silver/commodities widget.
+ *   Stock/markets pages + everything else -> the theme's Live Markets (stocks)
+ *   widget (unchanged default). The theme's sidebar.php calls
+ *   mp_sidebar_shortcode() and renders that when it returns non-empty.
+ * ==========================================================================*/
+function mp_sidebar_context() {
+    if (is_admin()) return '';
+    // commodity rate pages (new + legacy) and the commodities hub
+    list($cm) = function_exists('mp_comm_ctx') ? mp_comm_ctx() : array('');
+    if ($cm) return 'commodities';
+    if (is_page(array('gold-rate', 'silver-rate', 'gold-rates', 'silver-rate-today', 'fuel-prices', 'commodities'))) return 'commodities';
+    if (is_category('commodities') || is_tax('category', 'commodities')) return 'commodities';
+    if (is_singular('post')) {
+        $cats = wp_get_post_categories(get_the_ID(), array('fields' => 'slugs'));
+        if (in_array('commodities', (array) $cats, true)) return 'commodities';
+    }
+    return ''; // -> theme default (stocks)
+}
+function mp_sidebar_shortcode() {
+    return (mp_sidebar_context() === 'commodities') ? '[mp_commodities_widget]' : '';
 }
