@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran News SEO
  * Description: Google News sitemap (/news-sitemap.xml), AI-crawler allow rules, Organization/NewsMediaOrganization + BreadcrumbList + author schema (works with or without Rank Math), instant IndexNow ping on publish, and a footer trust/policy bar. Built for moneypuran.com; safe to deactivate any time.
- * Version: 1.3.2
+ * Version: 1.3.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -817,4 +817,23 @@ add_action('wp_footer', function () {
 })();
 </script>
     <?php
+}, 20);
+
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Clean archive titles (v1.3.3): strip WordPress core's default
+ * "Category: " / "Tag: " / "Author: " prefix from the H1 the theme prints
+ * via the_archive_title() - it was showing as literally "Category: US
+ * Markets" to visitors and crawlers instead of just "US Markets".
+ * ───────────────────────────────────────────────────────────────────────── */
+add_filter('get_the_archive_title', function ($title) {
+    if (is_category())       return single_cat_title('', false);
+    if (is_tag())             return single_tag_title('', false);
+    if (is_author())          return get_the_author();
+    if (is_tax())             return single_term_title('', false);
+    if (is_post_type_archive()) return post_type_archive_title('', false);
+    if (is_day())             return get_the_date();
+    if (is_month())           return get_the_date('F Y');
+    if (is_year())            return get_the_date('Y');
+    return $title;
 }, 20);
