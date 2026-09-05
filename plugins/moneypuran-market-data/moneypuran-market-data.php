@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.28.0
+ * Version: 1.28.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -6530,16 +6530,17 @@ function mp_comm_data_build($metal, $citySlug = '') {
     $intra = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '15m');
     $ib = is_array($intra) && !empty($intra['bars']) ? $intra['bars'] : array();
     $today = gmdate('Y-m-d', time() + 19800);
-    $hi = $lo = null;
+    $hi = $lo = null; $nToday = 0;
     foreach ($ib as $bar) {
         if (gmdate('Y-m-d', (int) $bar[0] + 19800) !== $today) continue;
+        $nToday++;
         if ($bar[2] !== null) $hi = ($hi === null) ? (float) $bar[2] : max($hi, (float) $bar[2]);
         if ($bar[3] !== null) $lo = ($lo === null) ? (float) $bar[3] : min($lo, (float) $bar[3]);
     }
-    if ($hi !== null && $lo !== null && $hi > $lo) {
+    if ($hi !== null && $lo !== null && $nToday >= 3 && $lo > 0 && ($hi - $lo) / $lo > 0.0005) {
         $data['day_high'] = $hi;
         $data['day_low']  = $lo;
-        $data['ref_unit'] = ($metal === 'silver') ? 'per kg' : 'per 10 g (24K)';
+        $data['ref_unit'] = ($metal === 'silver') ? 'per kg' : 'per 10g, 24K';
     }
     $daily = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '1D');
     $db = is_array($daily) && !empty($daily['bars']) ? $daily['bars'] : array();
@@ -6626,7 +6627,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
         <span class="mp-comm__chg <?php echo $dir; ?>"><?php echo $chg > 0 ? '&#9650; +' : ($chg < 0 ? '&#9660; ' : '&bull; '); ?><?php echo number_format($chg, 2); ?>% today</span>
       <?php endif; ?>
       <?php if (!empty($d['day_high'])) : ?>
-        <span class="mp-comm__hl">Day range &#8377;<?php echo number_format($d['day_low']); ?> &ndash; &#8377;<?php echo number_format($d['day_high']); ?> <small>(<?php echo esc_html($d['ref_unit']); ?>)</small></span>
+        <span class="mp-comm__hl">Day range &#8377;<?php echo number_format($d['day_low']); ?> &ndash; &#8377;<?php echo number_format($d['day_high']); ?> <small><?php echo esc_html($d['ref_unit']); ?></small></span>
       <?php endif; ?>
     </div>
     <div class="mp-comm__asof">Updated <span data-live-datetime="datetime"><?php echo esc_html(date('j M Y, H:i', strtotime($d['asOf']))); ?></span> &middot; indicative</div>
@@ -7278,8 +7279,16 @@ add_action('mp_md_daily_touch', function () {
 
 add_shortcode('mp_why_market_archive', function () {
     $arc = get_option('mp_wmm_archive', array());
-    $recaps = get_posts(array('numberposts' => 6, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC',
-        'category_name' => 'indian-markets'));
+    // Actual dated daily recaps only - the newsroom's market-wrap posts whose
+    // title names the index and the day (not evergreen explainers).
+    $recaps = get_posts(array(
+        'numberposts' => 6, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC',
+        'category_name' => 'indian-markets,us-markets',
+        's' => 'today',
+    ));
+    $recaps = array_values(array_filter($recaps, function ($p) {
+        return (bool) preg_match('/\b(sensex|nifty|dow|nasdaq|s&p|market)\b.*\b(today|close|closes|closed|slip|slips|drop|drops|fall|falls|rise|rises|jump|jumps|end|ends)/i', get_the_title($p));
+    }));
     if (empty($arc) && empty($recaps)) return '';
     ob_start(); ?>
 <div class="mp-why__arc">
