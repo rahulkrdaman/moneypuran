@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.28.1
+ * Version: 1.29.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -6448,8 +6448,10 @@ function mp_comm_ctx() {
     $metal = mp_comm_metal_from_pagename($name);
     if (!$metal) return array('', '', '');
     $citySlug = strtolower((string) get_query_var('mp_city'));
-    $cities = mp_comm_cities();
-    if ($citySlug && isset($cities[$citySlug])) return array($metal, $citySlug, $cities[$citySlug][0]);
+    if ($citySlug) {
+        $rec = mp_comm_lookup($citySlug);
+        if ($rec) return array($metal, $citySlug, $rec[0]);
+    }
     return array($metal, '', '');
 }
 
@@ -6486,92 +6488,145 @@ function mp_comm_data($metal, $citySlug = '') {
     return $memo[$mk];
 }
 function mp_comm_data_build($metal, $citySlug = '') {
-    $cities = mp_comm_cities();
-    $cityDisplay = ($citySlug && isset($cities[$citySlug])) ? $cities[$citySlug][0] : 'India';
-    $lookupCity  = ($citySlug && isset($cities[$citySlug])) ? $cities[$citySlug][0] : 'Mumbai';
+    $rec = $citySlug ? mp_comm_lookup($citySlug) : null;
+    $cityDisplay = $rec ? $rec[0] : 'India';
+    $isIntl  = $rec && $rec[1] === 'intl';
+    $ccy     = $rec ? $rec[5] : 'INR';
+    $sym     = $rec ? $rec[6] : '&#8377;';
+    $premPct = $rec ? (float) $rec[7] : 0.0;
+    $decimals = ($ccy === 'INR') ? 0 : 2;
+
+    $grp = get_transient(MP_MD_GRP_KEY);
+    $b   = is_array($grp) && !empty($grp['bullion_inr']) ? $grp['bullion_inr'] : null;
+    if (!$b || empty($b['usdinr']) || empty($b['gold_24k_10g'])) return null;
+    $usdinr = (float) $b['usdinr'];
+
+    if ($isIntl) {
+        $fx = mp_comm_fx($ccy);
+        $per10_24 = ($b['gold_24k_10g'] / $usdinr) * $fx;
+        $silverKg = !empty($b['silver_kg']) ? ($b['silver_kg'] / $usdinr) * $fx : null;
+        $scn = function_exists('mp_md_screener_scenario') ? mp_md_screener_scenario() : array();
+        $goldChg   = isset($scn['global']['gold']['chg']) ? $scn['global']['gold']['chg'] : ($b['gold_chg_pct'] ?? null);
+        $silverChg = $b['silver_chg_pct'] ?? null;
+        $noteExtra = ' Shown as the international market rate in ' . $ccy . ', excluding local taxes and dealer premiums.';
+    } else {
+        $gMult = (float) apply_filters('mp_gold_india_multiplier', 1.13) * (1 + $premPct / 100);
+        $sMult = (float) apply_filters('mp_silver_india_multiplier', (float) apply_filters('mp_gold_india_multiplier', 1.13)) * (1 + $premPct / 100);
+        $per10_24 = $b['gold_24k_10g'] * $gMult;
+        $silverKg = !empty($b['silver_kg']) ? $b['silver_kg'] * $sMult : null;
+        $goldChg   = $b['gold_chg_pct'] ?? null;
+        $silverChg = $b['silver_chg_pct'] ?? null;
+        $regs = mp_comm_regions();
+        $noteExtra = ($premPct > 0 && $rec && isset($regs[$rec[3]])) ? ' Includes the approximate ' . $regs[$rec[3]][0] . ' retail premium jewellers apply over the IBJA benchmark.' : '';
+    }
 
     if ($metal === 'silver') {
-        $s = mp_rates_silver($lookupCity);
-        if (!$s) return null;
-        $perKg = (float) $s['per_kg'];
+        if (!$silverKg) return null;
+        $perKg = (float) $silverKg;
         $units = array();
         foreach (array('1 g' => 1, '10 g' => 10, '100 g' => 100, '1 kg' => 1000) as $lbl => $gr) {
-            $units[$lbl] = round($perKg * $gr / 1000, $gr < 10 ? 2 : 0);
+            $units[$lbl] = round($perKg * $gr / 1000, $gr < 100 ? 2 : $decimals);
         }
         $data = array(
             'metal' => 'silver', 'city' => $cityDisplay, 'citySlug' => $citySlug,
             'purities' => array('999' => array('label' => '999 (Fine)', 'units' => $units)),
-            'chg_pct' => $s['chg_pct'], 'asOf' => $s['asOf'], 'note' => $s['note'],
-            'per_g' => $s['per_g'], 'per_kg' => $perKg,
+            'chg_pct' => $silverChg,
+            'per_g' => round($perKg / 1000, 2), 'per_kg' => round($perKg, $decimals),
         );
     } else {
-        $g = mp_rates_gold($lookupCity);
-        if (!$g) return null;
-        $per10_24 = (float) $g['gold_24k']['ten_g'];
         $purities = array();
         foreach (array('24k' => array('24K (999)', 1.0), '22k' => array('22K (916)', 0.916), '18k' => array('18K (750)', 0.75)) as $k => $meta) {
             $per10 = $per10_24 * $meta[1];
             $purities[$k] = array('label' => $meta[0], 'units' => array(
-                '1 g'   => round($per10 / 10),
-                '8 g'   => round($per10 * 0.8),
-                '10 g'  => round($per10),
-                '100 g' => round($per10 * 10),
+                '1 g'   => round($per10 / 10, $decimals),
+                '8 g'   => round($per10 * 0.8, $decimals),
+                '10 g'  => round($per10, $decimals),
+                '100 g' => round($per10 * 10, $decimals),
             ));
         }
         $data = array(
             'metal' => 'gold', 'city' => $cityDisplay, 'citySlug' => $citySlug,
             'purities' => $purities,
-            'chg_pct' => $g['chg_pct'], 'asOf' => $g['asOf'], 'note' => $g['note'],
-            'per_g_24k' => $g['gold_24k']['g'], 'per_10g_24k' => $per10_24,
+            'chg_pct' => $goldChg,
+            'per_g_24k' => round($per10_24 / 10, $decimals), 'per_10g_24k' => round($per10_24, $decimals),
         );
     }
+    $data['currency'] = $ccy;
+    $data['symbol']   = $sym;
+    $data['isIntl']   = $isIntl;
+    $data['asOf']     = isset($grp['asOf']) ? $grp['asOf'] : gmdate('c');
+    $data['note']     = 'Indicative reference rate' . ($isIntl ? '' : ' - the international price adjusted for import duty and 3% GST') . '.' . $noteExtra . ' Local jeweller rates vary by making charges and hallmarking; confirm before buying.';
 
-    // Session high/low from today's intraday (15m) bars, in IST.
-    $intra = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '15m');
-    $ib = is_array($intra) && !empty($intra['bars']) ? $intra['bars'] : array();
-    $today = gmdate('Y-m-d', time() + 19800);
-    $hi = $lo = null; $nToday = 0;
-    foreach ($ib as $bar) {
-        if (gmdate('Y-m-d', (int) $bar[0] + 19800) !== $today) continue;
-        $nToday++;
-        if ($bar[2] !== null) $hi = ($hi === null) ? (float) $bar[2] : max($hi, (float) $bar[2]);
-        if ($bar[3] !== null) $lo = ($lo === null) ? (float) $bar[3] : min($lo, (float) $bar[3]);
+    if (!$isIntl) {
+        // Session high/low from today's intraday (15m) bars, in IST (INR terms).
+        $intra = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '15m');
+        $ib = is_array($intra) && !empty($intra['bars']) ? $intra['bars'] : array();
+        $today = gmdate('Y-m-d', time() + 19800);
+        $hi = $lo = null; $nToday = 0;
+        foreach ($ib as $bar) {
+            if (gmdate('Y-m-d', (int) $bar[0] + 19800) !== $today) continue;
+            $nToday++;
+            if ($bar[2] !== null) $hi = ($hi === null) ? (float) $bar[2] : max($hi, (float) $bar[2]);
+            if ($bar[3] !== null) $lo = ($lo === null) ? (float) $bar[3] : min($lo, (float) $bar[3]);
+        }
+        if ($hi !== null && $lo !== null && $nToday >= 3 && $lo > 0 && ($hi - $lo) / $lo > 0.0005) {
+            $prem = 1 + $premPct / 100;
+            $data['day_high'] = ($metal === 'gold') ? $hi * $prem : $hi * $prem;
+            $data['day_low']  = ($metal === 'gold') ? $lo * $prem : $lo * $prem;
+            $data['ref_unit'] = ($metal === 'silver') ? 'per kg' : 'per 10g, 24K';
+        }
+        $daily = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '1D');
+        $db = is_array($daily) && !empty($daily['bars']) ? $daily['bars'] : array();
+        if (count($db) > 1) {
+            $data['day_chg_abs'] = round($db[count($db) - 1][4] - $db[count($db) - 2][4]);
+        }
+        $hist = mp_comm_history($metal, 10);
+        if ($premPct > 0) {
+            foreach ($hist as &$hh) { $hh['close'] = round($hh['close'] * (1 + $premPct / 100)); if ($hh['delta'] !== null) $hh['delta'] = round($hh['delta'] * (1 + $premPct / 100)); }
+            unset($hh);
+        }
+        $data['history'] = $hist;
+    } else {
+        $data['history'] = array();
     }
-    if ($hi !== null && $lo !== null && $nToday >= 3 && $lo > 0 && ($hi - $lo) / $lo > 0.0005) {
-        $data['day_high'] = $hi;
-        $data['day_low']  = $lo;
-        $data['ref_unit'] = ($metal === 'silver') ? 'per kg' : 'per 10g, 24K';
-    }
-    $daily = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '1D');
-    $db = is_array($daily) && !empty($daily['bars']) ? $daily['bars'] : array();
-    if (count($db) > 1) {
-        $data['day_chg_abs'] = round($db[count($db) - 1][4] - $db[count($db) - 2][4]);
-    }
-    $data['history'] = mp_comm_history($metal, 10);
-    $data['cityNote'] = ($citySlug && isset($cities[$citySlug])) ? $cities[$citySlug][2] : '';
-    $data['cityState'] = ($citySlug && isset($cities[$citySlug])) ? $cities[$citySlug][1] : '';
+    $data['cityNote']  = $rec ? $rec[4] : '';
+    $data['cityState'] = $rec ? $rec[2] : '';
+    $data['region']    = ($rec && $rec[1] === 'in') ? $rec[3] : '';
+    $data['indexed']   = $rec ? (bool) $rec[8] : true;
     return $data;
 }
 
 /* ---- FAQ (targets featured snippets) ---------------------------------- */
-function mp_comm_faq($metal, $cityDisplay) {
+function mp_comm_faq($metal, $citySlug = '') {
     $M  = ($metal === 'silver') ? 'silver' : 'gold';
-    $where = ($cityDisplay && $cityDisplay !== 'India') ? (' in ' . $cityDisplay) : ' in India';
-    $d = mp_comm_data($metal, '');
+    $rec = $citySlug ? mp_comm_lookup($citySlug) : null;
+    $cityDisplay = $rec ? $rec[0] : 'India';
+    $isIntl = $rec && $rec[1] === 'intl';
+    $where = $cityDisplay !== 'India' ? (' in ' . $cityDisplay) : ' in India';
+    $d = mp_comm_data($metal, $citySlug);
+    $sy = $d ? html_entity_decode($d['symbol']) : "\xE2\x82\xB9";
+    $dec = ($d && $d['currency'] !== 'INR') ? 2 : 0;
     $ref = '';
     if ($d) {
         if ($metal === 'silver') {
-            $ref = 'As of ' . gmdate('j M Y') . ', the indicative 999 silver rate' . $where . ' is about &#8377;'
-                 . number_format($d['per_kg']) . ' per kg (&#8377;' . number_format($d['per_g'], 2) . ' per gram).';
+            $ref = 'As of ' . gmdate('j M Y') . ', the indicative 999 silver rate' . $where . ' is about ' . $sy
+                 . number_format($d['per_kg'], $dec) . ' per kg (' . $sy . number_format($d['per_g'], 2) . ' per gram).';
         } else {
-            $ref = 'As of ' . gmdate('j M Y') . ', the indicative 24K gold rate' . $where . ' is about &#8377;'
-                 . number_format($d['per_g_24k']) . ' per gram and &#8377;' . number_format($d['per_10g_24k']) . ' per 10 grams; 22K is about &#8377;'
-                 . number_format(round($d['per_10g_24k'] * 0.916)) . ' per 10 grams.';
+            $ref = 'As of ' . gmdate('j M Y') . ', the indicative 24K gold rate' . $where . ' is about ' . $sy
+                 . number_format($d['per_g_24k'], $dec) . ' per gram and ' . $sy . number_format($d['per_10g_24k'], $dec) . ' per 10 grams; 22K is about ' . $sy
+                 . number_format($d['per_10g_24k'] * 0.916, $dec) . ' per 10 grams.';
         }
     }
     $faq = array(
         array('What is the ' . $M . ' price' . $where . ' today?', $ref . ' Rates update through the day and exclude jeweller making charges.'),
     );
+    if ($isIntl) {
+        $faq[] = array('Is ' . $cityDisplay . ' ' . $M . ' cheaper than in India?',
+            'Usually yes for the metal itself &mdash; ' . $cityDisplay . ' prices exclude India&rsquo;s import duty and 3% GST, so bars and coins are a few percent cheaper. Bringing gold into India above the customs allowance attracts duty, so the saving narrows once you account for that.');
+        $faq[] = array('What will ' . $M . ' prices be tomorrow?',
+            'No one can reliably predict the next day&rsquo;s ' . $M . ' price. It moves with the international ' . $M . ' price, the US dollar and safe-haven demand. This page updates through the day.');
+        return $faq;
+    }
     if ($metal === 'gold') {
         $faq[] = array('What is the 22 carat gold rate' . $where . ' today?',
             'The 22K (916) gold rate' . $where . ' is roughly 91.6% of the 24K rate, since 22-carat gold is 22 parts gold to 2 parts alloy. See the 22K row in the price table above for today&rsquo;s figure.');
@@ -6598,28 +6653,44 @@ add_shortcode('mp_commodity_page', function ($atts) {
 
     if (!$d) return '<p>' . esc_html($M) . ' rate data is loading — please refresh in a moment.</p>';
 
-    $cities = mp_comm_cities();
+    $SY  = $d['symbol'];
+    $DEC = ($d['currency'] === 'INR') ? 0 : 2;
     $hub = mp_comm_hub_slugs()[$metal];
+    $featured = mp_comm_cities();
+    $allSlugs = mp_comm_all_slugs();
 
     ob_start(); ?>
-<div class="mp-comm" data-metal="<?php echo esc_attr($metal); ?>">
+<div class="mp-comm" data-metal="<?php echo esc_attr($metal); ?>" data-hub="<?php echo esc_attr($hub); ?>" data-city="<?php echo esc_attr($citySlug); ?>">
 
   <?php /* city switcher */ ?>
   <nav class="mp-comm__cities" aria-label="Choose city">
     <a href="<?php echo esc_url(home_url('/' . $hub . '/')); ?>"<?php echo $citySlug ? '' : ' class="on"'; ?>>India</a>
-    <?php foreach ($cities as $sl => $meta) : ?>
+    <?php foreach ($featured as $sl => $meta) : ?>
       <a href="<?php echo esc_url(home_url('/' . $hub . '/' . $sl . '/')); ?>"<?php echo $sl === $citySlug ? ' class="on"' : ''; ?>><?php echo esc_html($meta[0]); ?></a>
     <?php endforeach; ?>
+    <button type="button" class="mp-comm__more" data-role="citybtn">More cities &amp; countries</button>
   </nav>
+  <p class="mp-comm__geo" data-role="geo" hidden></p>
+
+  <div class="mp-comm__modal" data-role="citymodal" hidden>
+    <div class="mp-comm__modal-box" role="dialog" aria-label="Select your city">
+      <div class="mp-comm__modal-head">
+        <strong>Select your city</strong>
+        <button type="button" data-role="cityclose" aria-label="Close">&times;</button>
+      </div>
+      <input type="search" data-role="citysearch" placeholder="Search your city or country" autocomplete="off">
+      <ul class="mp-comm__modal-list" data-role="citylist"></ul>
+    </div>
+  </div>
 
   <?php /* headline + day movement */ ?>
   <?php $chg = $d['chg_pct']; $dir = ($chg === null) ? 'flat' : ($chg > 0.02 ? 'up' : ($chg < -0.02 ? 'dn' : 'flat')); ?>
   <div class="mp-comm__head mp-comm--<?php echo $dir; ?>">
     <div class="mp-comm__price">
       <?php if ($metal === 'silver') : ?>
-        <strong>&#8377;<?php echo number_format($d['per_kg']); ?></strong><span>/kg &middot; 999 fine</span>
+        <strong><?php echo $SY; ?><?php echo number_format($d['per_kg'], $DEC); ?></strong><span>/kg &middot; 999 fine</span>
       <?php else : ?>
-        <strong>&#8377;<?php echo number_format($d['per_g_24k']); ?></strong><span>/gram &middot; 24K</span>
+        <strong><?php echo $SY; ?><?php echo number_format($d['per_g_24k'], $DEC); ?></strong><span>/gram &middot; 24K</span>
       <?php endif; ?>
     </div>
     <div class="mp-comm__move">
@@ -6642,7 +6713,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
         <tr>
           <th scope="row"><?php echo esc_html($p['label']); ?></th>
           <?php foreach ($p['units'] as $ul => $uv) : ?>
-            <td>&#8377;<?php echo number_format($uv, ($uv < 100 && $metal === 'silver') ? 2 : 0); ?></td>
+            <td><?php echo $SY; ?><?php echo number_format($uv, ($uv < 100) ? 2 : $DEC); ?></td>
           <?php endforeach; ?>
         </tr>
       <?php endforeach; ?>
@@ -6671,10 +6742,11 @@ add_shortcode('mp_commodity_page', function ($atts) {
   <?php endif; ?>
 
   <?php /* calculator */ ?>
-  <h2><?php echo esc_html($M); ?> price calculator &mdash; making charges &amp; GST</h2>
-  <div class="mp-comm__calc" data-per-g="<?php echo esc_attr($metal === 'silver' ? $d['per_g'] : $d['per_g_24k']); ?>"
-       data-per-g-22="<?php echo esc_attr($metal === 'gold' ? round($d['per_g_24k'] * 0.916) : ''); ?>"
-       data-per-g-18="<?php echo esc_attr($metal === 'gold' ? round($d['per_g_24k'] * 0.75) : ''); ?>">
+  <h2><?php echo esc_html($M); ?> price calculator &mdash; making charges<?php echo $d['isIntl'] ? '' : ' &amp; GST'; ?></h2>
+  <div class="mp-comm__calc" data-sym="<?php echo esc_attr(html_entity_decode($SY)); ?>" data-dec="<?php echo (int) $DEC; ?>" data-gst="<?php echo $d['isIntl'] ? '0' : '1'; ?>"
+       data-per-g="<?php echo esc_attr($metal === 'silver' ? $d['per_g'] : $d['per_g_24k']); ?>"
+       data-per-g-22="<?php echo esc_attr($metal === 'gold' ? round($d['per_g_24k'] * 0.916, $DEC) : ''); ?>"
+       data-per-g-18="<?php echo esc_attr($metal === 'gold' ? round($d['per_g_24k'] * 0.75, $DEC) : ''); ?>">
     <div class="mp-comm__calc-in">
       <?php if ($metal === 'gold') : ?>
       <label>Purity
@@ -6683,28 +6755,31 @@ add_shortcode('mp_commodity_page', function ($atts) {
       <?php endif; ?>
       <label>Weight (grams)<input type="number" data-role="wt" value="10" min="0" step="0.1"></label>
       <label>Making charges (%)<input type="number" data-role="mk" value="12" min="0" step="1"></label>
-      <label>Hallmark / certification (&#8377;)<input type="number" data-role="hm" value="45" min="0" step="5"></label>
-      <label>GST<select data-role="gst"><option value="1">Include 3%</option><option value="0">Exclude</option></select></label>
+      <label>Hallmark / certification<input type="number" data-role="hm" value="<?php echo $d['isIntl'] ? '0' : '45'; ?>" min="0" step="5"></label>
+      <?php if (!$d['isIntl']) : ?><label>GST<select data-role="gst"><option value="1">Include 3%</option><option value="0">Exclude</option></select></label><?php endif; ?>
     </div>
     <div class="mp-comm__calc-out">
-      <div><span>Base metal value</span><span data-role="o-base">&#8377;0</span></div>
-      <div><span>Making charges</span><span data-role="o-make">&#8377;0</span></div>
-      <div><span>Hallmark charge</span><span data-role="o-hm">&#8377;0</span></div>
-      <div><span>GST (3%)</span><span data-role="o-gst">&#8377;0</span></div>
-      <div class="tot"><span>Total payable</span><span data-role="o-tot">&#8377;0</span></div>
+      <div><span>Base metal value</span><span data-role="o-base"><?php echo $SY; ?>0</span></div>
+      <div><span>Making charges</span><span data-role="o-make"><?php echo $SY; ?>0</span></div>
+      <div><span>Hallmark charge</span><span data-role="o-hm"><?php echo $SY; ?>0</span></div>
+      <?php if (!$d['isIntl']) : ?><div><span>GST (3%)</span><span data-role="o-gst"><?php echo $SY; ?>0</span></div><?php endif; ?>
+      <div class="tot"><span>Total payable</span><span data-role="o-tot"><?php echo $SY; ?>0</span></div>
     </div>
   </div>
 
   <?php /* city context */ ?>
   <h2><?php echo $citySlug ? esc_html($M) . ' rate in ' . esc_html($whereLabel) . ' &mdash; local context' : 'How the ' . esc_html(strtolower($M)) . ' rate in India is set'; ?></h2>
-  <?php if ($citySlug && !empty($d['cityNote'])) : ?>
+  <?php if ($citySlug && $d['isIntl']) : ?>
     <p><?php echo wp_kses_post($d['cityNote']); ?></p>
-    <p>GST on <?php echo esc_html(strtolower($M)); ?> is a uniform <strong>3%</strong> across <?php echo esc_html($d['cityState']); ?> and the rest of India, so the price you pay in <?php echo esc_html($cityDisplay); ?> differs from other cities only by local jeweller premiums, transport from bullion hubs and making-charge conventions &mdash; usually a fraction of a percent on the metal value.</p>
+    <p>The figures above are the international <?php echo esc_html(strtolower($M)); ?> price converted to <?php echo esc_html($d['currency']); ?> at today&rsquo;s exchange rate. They do <em>not</em> include India&rsquo;s import duty or GST, so they are lower than the equivalent rate inside India. Local dealers in <?php echo esc_html($cityDisplay); ?> add their own small premium and, where applicable, VAT/GST on jewellery making.</p>
+  <?php elseif ($citySlug && !empty($d['cityNote'])) : ?>
+    <p><?php echo wp_kses_post($d['cityNote']); ?></p>
+    <p>GST on <?php echo esc_html(strtolower($M)); ?> is a uniform <strong>3%</strong> across <?php echo esc_html($d['cityState']); ?> and the rest of India, so the price you pay in <?php echo esc_html($cityDisplay); ?> differs from other cities mainly by the local retail premium jewellers apply over the IBJA benchmark and by making-charge conventions &mdash; typically 1&ndash;2% on the metal value.</p>
   <?php else : ?>
-    <p>India&rsquo;s <?php echo esc_html(strtolower($M)); ?> rate is set by the international price in US dollars, the USD/INR exchange rate, import duty and a uniform 3% GST. City-to-city differences are small and come from local jewellers&rsquo; association benchmarks, transport and insurance, and making-charge conventions rather than tax. The India Bullion &amp; Jewellers Association (IBJA) rate published from Mumbai is the benchmark most jewellers follow.</p>
-    <p>Pick your city above for a localised rate and context: <?php
+    <p>India&rsquo;s <?php echo esc_html(strtolower($M)); ?> rate is set by the international price in US dollars, the USD/INR exchange rate, import duty and a uniform 3% GST. City-to-city differences are small and come from local jewellers&rsquo; association benchmarks, the regional retail premium, and making-charge conventions rather than tax. The India Bullion &amp; Jewellers Association (IBJA) rate published from Mumbai is the benchmark most jewellers follow.</p>
+    <p>Pick your city above &mdash; or use <strong>More cities &amp; countries</strong> &mdash; for a localised rate. Popular: <?php
       $links = array();
-      foreach ($cities as $sl => $meta) $links[] = '<a href="' . esc_url(home_url('/' . $hub . '/' . $sl . '/')) . '">' . esc_html($meta[0]) . '</a>';
+      foreach ($featured as $sl => $meta) $links[] = '<a href="' . esc_url(home_url('/' . $hub . '/' . $sl . '/')) . '">' . esc_html($meta[0]) . '</a>';
       echo wp_kses_post(implode(' &middot; ', $links));
     ?>.</p>
   <?php endif; ?>
@@ -6712,7 +6787,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
   <?php /* FAQ */ ?>
   <h2>Frequently asked questions</h2>
   <div class="mp-comm__faq">
-    <?php foreach (mp_comm_faq($metal, $cityDisplay) as $i => $qa) : ?>
+    <?php foreach (mp_comm_faq($metal, $citySlug) as $i => $qa) : ?>
       <details<?php echo $i === 0 ? ' open' : ''; ?>>
         <summary><?php echo esc_html($qa[0]); ?></summary>
         <p><?php echo wp_kses_post($qa[1]); ?></p>
@@ -6725,11 +6800,19 @@ add_shortcode('mp_commodity_page', function ($atts) {
   </div>
 </div>
 
+<script type="application/json" data-role="citydata"><?php echo wp_json_encode(mp_comm_modal_json()); ?></script>
 <script>
 (function(){
+  var ROOT = document.currentScript.closest('.mp-comm') || document.querySelector('.mp-comm');
+  if (!ROOT) return;
   function n(s){ return parseFloat(String(s).replace(/[^0-9.]/g,'')) || 0; }
-  function inr(x){ return '₹' + Math.round(x).toLocaleString('en-IN'); }
+
+  /* --- calculator (currency-aware) --- */
   function wire(C){
+    var sym = C.getAttribute('data-sym') || '₹';
+    var dec = parseInt(C.getAttribute('data-dec'),10) || 0;
+    var gstOn = C.getAttribute('data-gst') === '1';
+    function money(x){ return sym + Number(x).toLocaleString(dec ? 'en-US' : 'en-IN', {minimumFractionDigits:dec, maximumFractionDigits:dec}); }
     function perG(){
       var sel = C.querySelector('[data-role=pty]');
       if (sel && sel.value === 'g22') return n(C.getAttribute('data-per-g-22'));
@@ -6737,28 +6820,73 @@ add_shortcode('mp_commodity_page', function ($atts) {
       return n(C.getAttribute('data-per-g'));
     }
     function calc(){
-      var wt = n(C.querySelector('[data-role=wt]').value),
-          mk = n(C.querySelector('[data-role=mk]').value),
-          hm = n(C.querySelector('[data-role=hm]').value),
-          gInc = C.querySelector('[data-role=gst]').value === '1';
+      var wt = n((C.querySelector('[data-role=wt]')||{}).value),
+          mk = n((C.querySelector('[data-role=mk]')||{}).value),
+          hm = n((C.querySelector('[data-role=hm]')||{}).value),
+          gEl = C.querySelector('[data-role=gst]'),
+          gInc = gstOn && (!gEl || gEl.value === '1');
       var base = perG()*wt, make = base*mk/100, sub = base+make+hm, gst = gInc ? sub*0.03 : 0;
-      C.querySelector('[data-role=o-base]').textContent = inr(base);
-      C.querySelector('[data-role=o-make]').textContent = inr(make);
-      C.querySelector('[data-role=o-hm]').textContent = inr(hm);
-      C.querySelector('[data-role=o-gst]').textContent = inr(gst);
-      C.querySelector('[data-role=o-tot]').textContent = inr(sub+gst);
+      var set = function(r,v){ var el=C.querySelector('[data-role='+r+']'); if(el) el.textContent=money(v); };
+      set('o-base',base); set('o-make',make); set('o-hm',hm); set('o-gst',gst); set('o-tot',sub+gst);
     }
-    C.addEventListener('input', calc);
-    C.addEventListener('change', calc);
-    calc();
+    C.addEventListener('input', calc); C.addEventListener('change', calc); calc();
   }
-  var list = document.querySelectorAll('.mp-comm__calc');
-  for (var i=0;i<list.length;i++) wire(list[i]);
+  var cl = ROOT.querySelectorAll('.mp-comm__calc');
+  for (var i=0;i<cl.length;i++) wire(cl[i]);
+
+  /* --- city modal + search --- */
+  var hub = ROOT.getAttribute('data-hub') || 'gold-rate';
+  var modal = ROOT.querySelector('[data-role=citymodal]');
+  var listEl = ROOT.querySelector('[data-role=citylist]');
+  var search = ROOT.querySelector('[data-role=citysearch]');
+  var data = [];
+  try { data = JSON.parse((document.querySelector('[data-role=citydata]')||{}).textContent) || []; } catch(e){}
+  function render(q){
+    q = (q||'').trim().toLowerCase();
+    var rows = data.filter(function(c){ return !q || (c.n+' '+c.s).toLowerCase().indexOf(q) > -1; }).slice(0, 60);
+    listEl.innerHTML = rows.map(function(c){
+      return '<li><a href="/'+hub+'/'+c.k+'/">'+c.n+' <span>'+c.s+'</span></a></li>';
+    }).join('') || '<li class="mp-comm__modal-none">No match &mdash; showing the India rate</li>';
+  }
+  function open(){ if(!modal) return; modal.hidden=false; render(''); if(search){ search.value=''; search.focus(); } }
+  function close(){ if(modal) modal.hidden=true; }
+  var btn = ROOT.querySelector('[data-role=citybtn]');
+  if (btn) btn.addEventListener('click', open);
+  var x = ROOT.querySelector('[data-role=cityclose]');
+  if (x) x.addEventListener('click', close);
+  if (modal) modal.addEventListener('click', function(e){ if(e.target===modal) close(); });
+  if (search) search.addEventListener('input', function(){ render(this.value); });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') close(); });
+
+  /* --- geolocation hint (no redirect - SEO safe) --- */
+  var geo = ROOT.querySelector('[data-role=geo]');
+  if (geo && !ROOT.getAttribute('data-city')) {
+    try {
+      fetch('https://ipapi.co/json/').then(function(r){return r.json();}).then(function(j){
+        var city = (j && (j.city||'')).toLowerCase().replace(/[^a-z]/g,'');
+        if (!city) return;
+        var hit = data.find(function(c){ return c.k.replace(/-/g,'') === city || c.n.toLowerCase().replace(/[^a-z]/g,'') === city; });
+        if (hit && location.pathname.indexOf('/'+hit.k+'/') === -1) {
+          geo.innerHTML = '📍 Your area looks like <strong>'+hit.n+'</strong> &mdash; <a href="/'+hub+'/'+hit.k+'/">see '+hit.n+' rates</a>';
+          geo.hidden = false;
+        }
+      }).catch(function(){});
+    } catch(e){}
+  }
 }());
 </script>
     <?php
     return ob_get_clean();
 });
+
+/* City list for the search modal: [{k:slug, n:name, s:sub}]. */
+function mp_comm_modal_json() {
+    $out = array();
+    foreach (mp_comm_cities() as $sl => $m) $out[] = array('k' => $sl, 'n' => $m[0], 's' => $m[1]);
+    foreach (mp_comm_india_ext() as $sl => $m) $out[] = array('k' => $sl, 'n' => $m[0], 's' => $m[1]);
+    foreach (mp_comm_intl() as $sl => $m) $out[] = array('k' => $sl, 'n' => $m[0], 's' => $m[1]);
+    return $out;
+}
 
 /* ---- rewrite rules + query var + flush ---------------------------------- */
 add_action('init', function () {
@@ -6803,8 +6931,7 @@ add_action('template_redirect', function () {
     if (isset($map[$path])) {
         $to = home_url('/' . $map[$path] . '/');
         $qCity = isset($_GET['city']) ? sanitize_title($_GET['city']) : '';
-        $cities = mp_comm_cities();
-        if ($qCity && isset($cities[$qCity])) $to = home_url('/' . $map[$path] . '/' . $qCity . '/');
+        if ($qCity && mp_comm_lookup($qCity)) $to = home_url('/' . $map[$path] . '/' . $qCity . '/');
         wp_safe_redirect($to, 301);
         exit;
     }
@@ -6868,28 +6995,34 @@ add_action('wp_head', function () {
     $hub = mp_comm_hub_slugs()[$metal];
 
     // Dataset
+    $ccy = $d['currency'];
+    $place = ($cityDisplay && $cityDisplay !== 'India') ? $cityDisplay : 'India';
+    $spatial = ($d['isIntl'] && !empty($d['cityState'])) ? $d['cityState'] : ($place . ', India');
     $vars = array();
     if ($metal === 'silver') {
-        $vars[] = array('@type' => 'PropertyValue', 'name' => '999 fine silver, per gram', 'value' => $d['per_g'], 'unitText' => 'INR per gram');
-        $vars[] = array('@type' => 'PropertyValue', 'name' => '999 fine silver, per kilogram', 'value' => $d['per_kg'], 'unitText' => 'INR per kilogram');
+        $vars[] = array('@type' => 'PropertyValue', 'name' => '999 fine silver, per gram', 'value' => $d['per_g'], 'unitText' => $ccy . ' per gram');
+        $vars[] = array('@type' => 'PropertyValue', 'name' => '999 fine silver, per kilogram', 'value' => $d['per_kg'], 'unitText' => $ccy . ' per kilogram');
     } else {
-        $vars[] = array('@type' => 'PropertyValue', 'name' => '24K gold, per gram', 'value' => $d['purities']['24k']['units']['1 g'], 'unitText' => 'INR per gram');
-        $vars[] = array('@type' => 'PropertyValue', 'name' => '22K gold, per gram', 'value' => $d['purities']['22k']['units']['1 g'], 'unitText' => 'INR per gram');
-        $vars[] = array('@type' => 'PropertyValue', 'name' => '18K gold, per gram', 'value' => $d['purities']['18k']['units']['1 g'], 'unitText' => 'INR per gram');
-        $vars[] = array('@type' => 'PropertyValue', 'name' => '24K gold, per 10 grams', 'value' => $d['purities']['24k']['units']['10 g'], 'unitText' => 'INR per 10 grams');
+        $vars[] = array('@type' => 'PropertyValue', 'name' => '24K gold, per gram', 'value' => $d['purities']['24k']['units']['1 g'], 'unitText' => $ccy . ' per gram');
+        $vars[] = array('@type' => 'PropertyValue', 'name' => '22K gold, per gram', 'value' => $d['purities']['22k']['units']['1 g'], 'unitText' => $ccy . ' per gram');
+        $vars[] = array('@type' => 'PropertyValue', 'name' => '18K gold, per gram', 'value' => $d['purities']['18k']['units']['1 g'], 'unitText' => $ccy . ' per gram');
+        $vars[] = array('@type' => 'PropertyValue', 'name' => '24K gold, per 10 grams', 'value' => $d['purities']['24k']['units']['10 g'], 'unitText' => $ccy . ' per 10 grams');
     }
     $dataset = array(
         '@context' => 'https://schema.org', '@type' => 'Dataset',
-        'name' => $t['M'] . ' rate' . ($cityDisplay ? ' in ' . $cityDisplay : ' in India') . ' (24K/22K/18K)',
-        'description' => 'Daily indicative ' . strtolower($M) . ' price for ' . ($cityDisplay ?: 'India') . ' in Indian Rupees, by purity and weight, with a 10-day history.',
+        'name' => $t['M'] . ' rate in ' . $place . ' (24K/22K/18K)',
+        'description' => 'Daily indicative ' . strtolower($M) . ' price for ' . $place . ' in ' . $ccy . ', by purity and weight'
+            . ($d['isIntl'] ? '.' : ', with a 10-day history.'),
         'url' => $t['canon'],
         'temporalCoverage' => gmdate('Y-m-d'),
         'dateModified' => $now,
         'creator' => array('@type' => 'Organization', 'name' => 'MoneyPuran', 'url' => home_url('/')),
         'license' => 'https://moneypuran.com/terms/',
-        'measurementTechnique' => 'International ' . strtolower($M) . ' price (USD/oz) converted to INR at the live USD/INR rate, adjusted for Indian import duty and 3% GST.',
+        'measurementTechnique' => $d['isIntl']
+            ? ('International ' . strtolower($M) . ' price (USD/oz) converted to ' . $ccy . ' at the live exchange rate, excluding local taxes.')
+            : ('International ' . strtolower($M) . ' price (USD/oz) converted to INR at the live USD/INR rate, adjusted for Indian import duty and 3% GST.'),
         'variableMeasured' => $vars,
-        'spatialCoverage' => array('@type' => 'Place', 'name' => ($cityDisplay ?: 'India') . ', India'),
+        'spatialCoverage' => array('@type' => 'Place', 'name' => $spatial),
     );
 
     // Breadcrumb
@@ -6903,7 +7036,7 @@ add_action('wp_head', function () {
 
     // FAQ
     $faqItems = array();
-    foreach (mp_comm_faq($metal, $cityDisplay) as $qa) {
+    foreach (mp_comm_faq($metal, $citySlug) as $qa) {
         $faqItems[] = array('@type' => 'Question', 'name' => wp_strip_all_tags($qa[0]),
             'acceptedAnswer' => array('@type' => 'Answer', 'text' => wp_strip_all_tags($qa[1])));
     }
@@ -6916,9 +7049,29 @@ add_action('wp_head', function () {
 
 /* keep the city URLs out of "noindex thin archive" logic and make them self-canonical/index */
 add_filter('rank_math/frontend/robots', function ($robots) {
-    if (mp_comm_titles()) { $robots['index'] = 'index'; unset($robots['noindex']); }
+    $t = mp_comm_titles();
+    if (!$t) return $robots;
+    if (!empty($t['citySlug'])) {
+        $rec = mp_comm_lookup($t['citySlug']);
+        if ($rec && empty($rec[8])) {  // long-tail city: keep out of the index, follow links
+            $robots['index'] = 'noindex';
+            $robots['noindex'] = 'noindex';
+            return $robots;
+        }
+    }
+    $robots['index'] = 'index';
+    unset($robots['noindex']);
     return $robots;
 });
+/* also via core wp_robots for themes/paths RM doesn't cover */
+add_filter('wp_robots', function ($robots) {
+    $t = function_exists('mp_comm_titles') ? mp_comm_titles() : null;
+    if ($t && !empty($t['citySlug'])) {
+        $rec = mp_comm_lookup($t['citySlug']);
+        if ($rec && empty($rec[8])) { $robots['noindex'] = true; unset($robots['index']); }
+    }
+    return $robots;
+}, 20);
 
 /* ---- ensure the two hub pages exist ---------------------------------- */
 add_action('init', function () {
@@ -6980,10 +7133,16 @@ add_filter('rank_math/sitemap/index', function ($links) {
 
 /* ---- IndexNow ping when bullion moves materially -------------------- */
 function mp_comm_all_urls() {
+    $slugs = array_merge(
+        array_keys(mp_comm_cities()),
+        function_exists('mp_comm_indexed_ext') ? mp_comm_indexed_ext() : array(),
+        function_exists('mp_comm_intl') ? array_keys(mp_comm_intl()) : array()
+    );
+    $slugs = array_values(array_unique($slugs));
     $urls = array();
-    foreach (mp_comm_hub_slugs() as $slug) {
-        $urls[] = home_url('/' . $slug . '/');
-        foreach (array_keys(mp_comm_cities()) as $c) $urls[] = home_url('/' . $slug . '/' . $c . '/');
+    foreach (mp_comm_hub_slugs() as $hub) {
+        $urls[] = home_url('/' . $hub . '/');
+        foreach ($slugs as $c) $urls[] = home_url('/' . $hub . '/' . $c . '/');
     }
     return $urls;
 }
@@ -7021,6 +7180,18 @@ add_action('wp_head', function () {
 .mp-comm__cities{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
 .mp-comm__cities a{font-size:13px;padding:5px 11px;border:1px solid var(--mp-border,#e2e8f0);border-radius:999px;text-decoration:none;color:var(--mp-ink,#0f172a)}
 .mp-comm__cities a.on{background:var(--mp-ink,#0f172a);color:#fff;border-color:var(--mp-ink,#0f172a)}
+.mp-comm__more{font-size:13px;padding:5px 11px;border:1px dashed var(--mp-border,#94a3b8);border-radius:999px;background:none;color:var(--mp-muted,#64748b);cursor:pointer}
+.mp-comm__geo{margin:-8px 0 14px;font-size:13px;color:var(--mp-muted,#64748b)}
+.mp-comm__modal{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.55);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px}
+.mp-comm__modal-box{background:var(--mp-surface,#fff);border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;width:100%;max-width:440px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+.mp-comm__modal-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--mp-border,#e2e8f0)}
+.mp-comm__modal-head button{border:0;background:none;font-size:22px;line-height:1;cursor:pointer;color:var(--mp-muted,#64748b)}
+.mp-comm__modal-box input[type=search]{margin:12px 16px;padding:9px 12px;border:1px solid var(--mp-border,#e2e8f0);border-radius:9px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
+.mp-comm__modal-list{list-style:none;margin:0;padding:0 8px 10px;overflow-y:auto}
+.mp-comm__modal-list a{display:flex;justify-content:space-between;gap:10px;padding:9px 10px;border-radius:8px;text-decoration:none;color:var(--mp-ink,#0f172a);font-size:14px}
+.mp-comm__modal-list a:hover{background:var(--mp-surface2,#f1f5f9)}
+.mp-comm__modal-list a span{color:var(--mp-muted,#64748b);font-size:12px;white-space:nowrap}
+.mp-comm__modal-none{padding:12px 10px;color:var(--mp-muted,#64748b);font-size:13px}
 .mp-comm__head{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:baseline;padding:16px;border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;background:var(--mp-surface2,#f8fafc)}
 .mp-comm__price strong{font-size:30px;font-variant-numeric:tabular-nums}
 .mp-comm__price span{color:var(--mp-muted,#64748b);font-size:13px;margin-left:6px}
@@ -7050,6 +7221,9 @@ html[data-theme="dark"] .mp-comm__head,html[data-theme="dark"] .mp-comm__disc{ba
 html[data-theme="dark"] .mp-comm__calc{background:#0f172a;border-color:rgba(255,255,255,.08)}
 html[data-theme="dark"] .mp-comm__cities a{color:#e2e8f0;border-color:rgba(255,255,255,.12)}
 html[data-theme="dark"] .mp-comm__cities a.on{background:#e2e8f0;color:#0f172a}
+html[data-theme="dark"] .mp-comm__modal-box{background:#0f172a;border-color:rgba(255,255,255,.12)}
+html[data-theme="dark"] .mp-comm__modal-list a{color:#e2e8f0}
+html[data-theme="dark"] .mp-comm__modal-list a:hover{background:#1e293b}
 </style>
     <?php
 }, 20);
@@ -7563,3 +7737,203 @@ add_filter('the_content', function ($html) {
     }
     return $html;
 }, 20);
+
+
+/* ============================================================================
+ * COMMODITY PAGES v1.29.0 - full India city coverage + international cities
+ *   + geolocation + searchable city selector.
+ *   Design/layout unchanged; this only widens `mp_comm_*` city resolution.
+ *
+ *   Data honesty:
+ *   - Every Indian city shows the pan-India indicative reference rate plus a
+ *     documented REGIONAL retail premium (south/east jewellers habitually
+ *     quote a little above the IBJA benchmark). It is not a fabricated
+ *     per-city price - it is one regional convention applied consistently
+ *     and disclosed on the page.
+ *   - International cities show the international metal price converted to the
+ *     LOCAL currency with no Indian import duty (e.g. Dubai in AED).
+ * ==========================================================================*/
+
+/* region key => [label, retail premium % over the IBJA reference] */
+function mp_comm_regions() {
+    return array(
+        'north' => array('North India', 0.0),
+        'west'  => array('West India', 0.2),
+        'south' => array('South India', 1.3),
+        'east'  => array('East India', 0.5),
+        'ne'    => array('North-East India', 1.0),
+        'central' => array('Central India', 0.3),
+    );
+}
+
+/* Big India list: slug => [Display, State/UT, region]. The 8 "featured"
+   cities from mp_comm_cities() keep their hand-written context. */
+function mp_comm_india_ext() {
+    $r = array(
+        // North
+        'new-delhi'=>array('New Delhi','Delhi','north'),'noida'=>array('Noida','Uttar Pradesh','north'),
+        'gurugram'=>array('Gurugram','Haryana','north'),'ghaziabad'=>array('Ghaziabad','Uttar Pradesh','north'),
+        'faridabad'=>array('Faridabad','Haryana','north'),'lucknow'=>array('Lucknow','Uttar Pradesh','north'),
+        'kanpur'=>array('Kanpur','Uttar Pradesh','north'),'agra'=>array('Agra','Uttar Pradesh','north'),
+        'varanasi'=>array('Varanasi','Uttar Pradesh','north'),'meerut'=>array('Meerut','Uttar Pradesh','north'),
+        'allahabad'=>array('Prayagraj','Uttar Pradesh','north'),'bareilly'=>array('Bareilly','Uttar Pradesh','north'),
+        'aligarh'=>array('Aligarh','Uttar Pradesh','north'),'moradabad'=>array('Moradabad','Uttar Pradesh','north'),
+        'gorakhpur'=>array('Gorakhpur','Uttar Pradesh','north'),'jaipur'=>array('Jaipur','Rajasthan','north'),
+        'jodhpur'=>array('Jodhpur','Rajasthan','north'),'udaipur'=>array('Udaipur','Rajasthan','north'),
+        'kota'=>array('Kota','Rajasthan','north'),'ajmer'=>array('Ajmer','Rajasthan','north'),
+        'bikaner'=>array('Bikaner','Rajasthan','north'),'chandigarh'=>array('Chandigarh','Chandigarh','north'),
+        'ludhiana'=>array('Ludhiana','Punjab','north'),'amritsar'=>array('Amritsar','Punjab','north'),
+        'jalandhar'=>array('Jalandhar','Punjab','north'),'patiala'=>array('Patiala','Punjab','north'),
+        'bathinda'=>array('Bathinda','Punjab','north'),'shimla'=>array('Shimla','Himachal Pradesh','north'),
+        'dharamshala'=>array('Dharamshala','Himachal Pradesh','north'),'jammu'=>array('Jammu','Jammu & Kashmir','north'),
+        'srinagar'=>array('Srinagar','Jammu & Kashmir','north'),'dehradun'=>array('Dehradun','Uttarakhand','north'),
+        'haridwar'=>array('Haridwar','Uttarakhand','north'),'rishikesh'=>array('Rishikesh','Uttarakhand','north'),
+        'panchkula'=>array('Panchkula','Haryana','north'),'ambala'=>array('Ambala','Haryana','north'),
+        'karnal'=>array('Karnal','Haryana','north'),'rohtak'=>array('Rohtak','Haryana','north'),
+        'hisar'=>array('Hisar','Haryana','north'),'sonipat'=>array('Sonipat','Haryana','north'),
+        // West
+        'navi-mumbai'=>array('Navi Mumbai','Maharashtra','west'),'thane'=>array('Thane','Maharashtra','west'),
+        'nagpur'=>array('Nagpur','Maharashtra','west'),'nashik'=>array('Nashik','Maharashtra','west'),
+        'aurangabad'=>array('Chhatrapati Sambhajinagar','Maharashtra','west'),'solapur'=>array('Solapur','Maharashtra','west'),
+        'kolhapur'=>array('Kolhapur','Maharashtra','west'),'amravati'=>array('Amravati','Maharashtra','west'),
+        'nanded'=>array('Nanded','Maharashtra','west'),'sangli'=>array('Sangli','Maharashtra','west'),
+        'surat'=>array('Surat','Gujarat','west'),'vadodara'=>array('Vadodara','Gujarat','west'),
+        'rajkot'=>array('Rajkot','Gujarat','west'),'bhavnagar'=>array('Bhavnagar','Gujarat','west'),
+        'jamnagar'=>array('Jamnagar','Gujarat','west'),'gandhinagar'=>array('Gandhinagar','Gujarat','west'),
+        'junagadh'=>array('Junagadh','Gujarat','west'),'anand'=>array('Anand','Gujarat','west'),
+        'panaji'=>array('Panaji','Goa','west'),'margao'=>array('Margao','Goa','west'),
+        // Central
+        'indore'=>array('Indore','Madhya Pradesh','central'),'bhopal'=>array('Bhopal','Madhya Pradesh','central'),
+        'jabalpur'=>array('Jabalpur','Madhya Pradesh','central'),'gwalior'=>array('Gwalior','Madhya Pradesh','central'),
+        'ujjain'=>array('Ujjain','Madhya Pradesh','central'),'sagar'=>array('Sagar','Madhya Pradesh','central'),
+        'raipur'=>array('Raipur','Chhattisgarh','central'),'bhilai'=>array('Bhilai','Chhattisgarh','central'),
+        'bilaspur'=>array('Bilaspur','Chhattisgarh','central'),'korba'=>array('Korba','Chhattisgarh','central'),
+        // South
+        'coimbatore'=>array('Coimbatore','Tamil Nadu','south'),'madurai'=>array('Madurai','Tamil Nadu','south'),
+        'tiruchirappalli'=>array('Tiruchirappalli','Tamil Nadu','south'),'salem'=>array('Salem','Tamil Nadu','south'),
+        'tirunelveli'=>array('Tirunelveli','Tamil Nadu','south'),'erode'=>array('Erode','Tamil Nadu','south'),
+        'vellore'=>array('Vellore','Tamil Nadu','south'),'thoothukudi'=>array('Thoothukudi','Tamil Nadu','south'),
+        'thanjavur'=>array('Thanjavur','Tamil Nadu','south'),'dindigul'=>array('Dindigul','Tamil Nadu','south'),
+        'mysuru'=>array('Mysuru','Karnataka','south'),'mangaluru'=>array('Mangaluru','Karnataka','south'),
+        'hubballi'=>array('Hubballi','Karnataka','south'),'belagavi'=>array('Belagavi','Karnataka','south'),
+        'kalaburagi'=>array('Kalaburagi','Karnataka','south'),'davangere'=>array('Davangere','Karnataka','south'),
+        'ballari'=>array('Ballari','Karnataka','south'),'shivamogga'=>array('Shivamogga','Karnataka','south'),
+        'tumakuru'=>array('Tumakuru','Karnataka','south'),'udupi'=>array('Udupi','Karnataka','south'),
+        'kochi'=>array('Kochi','Kerala','south'),'thiruvananthapuram'=>array('Thiruvananthapuram','Kerala','south'),
+        'kozhikode'=>array('Kozhikode','Kerala','south'),'thrissur'=>array('Thrissur','Kerala','south'),
+        'kollam'=>array('Kollam','Kerala','south'),'kannur'=>array('Kannur','Kerala','south'),
+        'alappuzha'=>array('Alappuzha','Kerala','south'),'kottayam'=>array('Kottayam','Kerala','south'),
+        'palakkad'=>array('Palakkad','Kerala','south'),'malappuram'=>array('Malappuram','Kerala','south'),
+        'visakhapatnam'=>array('Visakhapatnam','Andhra Pradesh','south'),'vijayawada'=>array('Vijayawada','Andhra Pradesh','south'),
+        'guntur'=>array('Guntur','Andhra Pradesh','south'),'nellore'=>array('Nellore','Andhra Pradesh','south'),
+        'kurnool'=>array('Kurnool','Andhra Pradesh','south'),'rajahmundry'=>array('Rajahmundry','Andhra Pradesh','south'),
+        'tirupati'=>array('Tirupati','Andhra Pradesh','south'),'kadapa'=>array('Kadapa','Andhra Pradesh','south'),
+        'warangal'=>array('Warangal','Telangana','south'),'nizamabad'=>array('Nizamabad','Telangana','south'),
+        'karimnagar'=>array('Karimnagar','Telangana','south'),'khammam'=>array('Khammam','Telangana','south'),
+        // East
+        'howrah'=>array('Howrah','West Bengal','east'),'durgapur'=>array('Durgapur','West Bengal','east'),
+        'asansol'=>array('Asansol','West Bengal','east'),'siliguri'=>array('Siliguri','West Bengal','east'),
+        'darjeeling'=>array('Darjeeling','West Bengal','east'),'kharagpur'=>array('Kharagpur','West Bengal','east'),
+        'patna'=>array('Patna','Bihar','east'),'gaya'=>array('Gaya','Bihar','east'),
+        'bhagalpur'=>array('Bhagalpur','Bihar','east'),'muzaffarpur'=>array('Muzaffarpur','Bihar','east'),
+        'darbhanga'=>array('Darbhanga','Bihar','east'),'ranchi'=>array('Ranchi','Jharkhand','east'),
+        'jamshedpur'=>array('Jamshedpur','Jharkhand','east'),'dhanbad'=>array('Dhanbad','Jharkhand','east'),
+        'bokaro'=>array('Bokaro','Jharkhand','east'),'bhubaneswar'=>array('Bhubaneswar','Odisha','east'),
+        'cuttack'=>array('Cuttack','Odisha','east'),'rourkela'=>array('Rourkela','Odisha','east'),
+        'sambalpur'=>array('Sambalpur','Odisha','east'),'puri'=>array('Puri','Odisha','east'),
+        'berhampur'=>array('Berhampur','Odisha','east'),
+        // North-East
+        'guwahati'=>array('Guwahati','Assam','ne'),'dibrugarh'=>array('Dibrugarh','Assam','ne'),
+        'silchar'=>array('Silchar','Assam','ne'),'jorhat'=>array('Jorhat','Assam','ne'),
+        'agartala'=>array('Agartala','Tripura','ne'),'imphal'=>array('Imphal','Manipur','ne'),
+        'shillong'=>array('Shillong','Meghalaya','ne'),'aizawl'=>array('Aizawl','Mizoram','ne'),
+        'kohima'=>array('Kohima','Nagaland','ne'),'itanagar'=>array('Itanagar','Arunachal Pradesh','ne'),
+        'gangtok'=>array('Gangtok','Sikkim','ne'),
+    );
+    return apply_filters('mp_comm_india_ext', $r);
+}
+
+/* International cities: slug => [Display, Country, currency code, symbol, note].
+   COMEX metal price x local FX, no Indian import duty. */
+function mp_comm_intl() {
+    return array(
+        'dubai'     => array('Dubai', 'United Arab Emirates', 'AED', 'AED&nbsp;', 'Gold bars and coins are free of VAT in the UAE; VAT applies only to jewellery making charges. Dubai prices track the international rate closely and are a common reference for NRI buyers.'),
+        'abu-dhabi' => array('Abu Dhabi', 'United Arab Emirates', 'AED', 'AED&nbsp;', 'Same tax treatment as the rest of the UAE - investment-grade gold is VAT-free. Rates match Dubai.'),
+        'singapore' => array('Singapore', 'Singapore', 'SGD', 'S$', 'Investment-grade precious metals are GST-exempt in Singapore, so quoted prices are very close to the international rate.'),
+        'london'    => array('London', 'United Kingdom', 'GBP', '&pound;', 'Investment gold is exempt from VAT in the UK. London is the centre of the global over-the-counter bullion market and sets the twice-daily LBMA price.'),
+        'new-york'  => array('New York', 'United States', 'USD', '$', 'There is no federal sales tax on bullion in the US; some states levy their own. New York prices track the COMEX futures market directly.'),
+        'toronto'   => array('Toronto', 'Canada', 'CAD', 'C$', 'Gold and silver of 99.5%+ / 99.9%+ purity are GST/HST-free in Canada, so bullion prices sit close to the international rate.'),
+        'sydney'    => array('Sydney', 'Australia', 'AUD', 'A$', 'Investment-grade gold and silver are GST-free in Australia. Sydney prices follow the international market in Australian dollars.'),
+    );
+}
+
+/* USD -> ccy. AED is pegged; the rest come from Yahoo with sane fallbacks. */
+function mp_comm_fx($ccy) {
+    $ccy = strtoupper($ccy);
+    if ($ccy === 'USD') return 1.0;
+    if ($ccy === 'AED') return 3.6725; // pegged
+    $ck = 'mp_comm_fx_' . $ccy;
+    $c = get_transient($ck);
+    if (is_numeric($c)) return (float) $c;
+    $fallback = array('SGD' => 1.29, 'GBP' => 0.79, 'CAD' => 1.36, 'AUD' => 1.52);
+    $q = function_exists('mp_md_yahoo_one') ? mp_md_yahoo_one($ccy . '=X') : null;
+    $rate = ($q && !empty($q['price']) && $q['price'] > 0) ? (float) $q['price'] : ($fallback[$ccy] ?? 1.0);
+    set_transient($ck, $rate, 15 * MINUTE_IN_SECONDS);
+    return $rate;
+}
+
+/* Unified lookup: slug => full record, or null.
+   record: [display, kind('in'|'intl'), state|country, region|'', context, ccy, symbol, premiumPct, indexed(bool)] */
+function mp_comm_lookup($slug) {
+    static $memo = array();
+    $slug = strtolower(trim((string) $slug));
+    if ($slug === '') return null;
+    if (array_key_exists($slug, $memo)) return $memo[$slug];
+
+    $featured = mp_comm_cities();
+    $regions  = mp_comm_regions();
+    $rec = null;
+
+    if (isset($featured[$slug])) {
+        $f = $featured[$slug];
+        // featured cities are mostly west/south/north - infer region loosely
+        $reg = 'north';
+        foreach (mp_comm_india_ext() as $s => $x) { if ($x[0] === $f[0]) { $reg = $x[2]; break; } }
+        if ($f[0] === 'Mumbai' || $f[0] === 'Pune' || $f[0] === 'Ahmedabad') $reg = 'west';
+        if (in_array($f[0], array('Chennai', 'Bengaluru', 'Hyderabad'), true)) $reg = 'south';
+        if ($f[0] === 'Kolkata') $reg = 'east';
+        $rec = array($f[0], 'in', $f[1], $reg, $f[2], 'INR', '&#8377;', $regions[$reg][1], true);
+    } elseif (($e = mp_comm_india_ext()) && isset($e[$slug])) {
+        $x = $e[$slug];
+        $reg = isset($regions[$x[2]]) ? $x[2] : 'north';
+        $ctx = $x[0] . ' is in ' . $x[1] . '. GST on gold and silver is a uniform 3% nationwide, so the rate in ' . $x[0]
+             . ' differs from the pan-India benchmark only by the small ' . $regions[$reg][0]
+             . ' retail premium local jewellers apply, plus their own making-charge conventions.';
+        $rec = array($x[0], 'in', $x[1], $reg, $ctx, 'INR', '&#8377;', $regions[$reg][1], mp_comm_is_indexed($slug));
+    } elseif (($i = mp_comm_intl()) && isset($i[$slug])) {
+        $y = $i[$slug];
+        $rec = array($y[0], 'intl', $y[1], '', $y[4], $y[2], $y[3], 0.0, true);
+    }
+    $memo[$slug] = $rec;
+    return $rec;
+}
+
+/* Which long-tail India cities go in the sitemap / stay indexable.
+   Featured + a curated tier-2 set; the rest render but noindex. */
+function mp_comm_indexed_ext() {
+    return array('new-delhi','noida','gurugram','jaipur','lucknow','kanpur','chandigarh','ludhiana','amritsar',
+        'nagpur','nashik','surat','vadodara','rajkot','indore','bhopal','raipur',
+        'coimbatore','madurai','mysuru','mangaluru','kochi','thiruvananthapuram','kozhikode','thrissur',
+        'visakhapatnam','vijayawada','guntur','warangal',
+        'patna','ranchi','jamshedpur','dhanbad','bhubaneswar','cuttack','howrah','siliguri','guwahati','agartala',
+        'varanasi','agra','meerut','ghaziabad','faridabad','dehradun','jammu','srinagar','jodhpur','udaipur',
+        'navi-mumbai','thane','gwalior','jabalpur','salem','tiruchirappalli','belagavi','hubballi','nellore');
+}
+function mp_comm_is_indexed($slug) {
+    return in_array($slug, mp_comm_indexed_ext(), true);
+}
+
+/* All resolvable city slugs (for the search modal). */
+function mp_comm_all_slugs() {
+    return array_merge(array_keys(mp_comm_cities()), array_keys(mp_comm_india_ext()), array_keys(mp_comm_intl()));
+}
