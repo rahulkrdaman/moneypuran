@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.29.1
+ * Version: 1.30.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -8021,3 +8021,422 @@ function mp_sidebar_context() {
 function mp_sidebar_shortcode() {
     return (mp_sidebar_context() === 'commodities') ? '[mp_commodities_widget]' : '';
 }
+
+
+/* ============================================================================
+ * IPO CENTRE  (v1.30.0)  [request 3]
+ *   /ipo/           - list with Upcoming / Open / Closed / Listed tabs
+ *   /ipo/<slug>/    - per-IPO page: dates, price band, issue details,
+ *                     editor-written strengths / risks / what-to-watch,
+ *                     key financials, and MoneyPuran's own coverage.
+ *
+ *   Data is an admin-editable JSON store (Settings -> Reading -> "IPO data").
+ *   There is no free reliable live IPO feed for India, so the calendar and
+ *   the analysis are maintained by the desk - nothing is auto-invented.
+ * ==========================================================================*/
+
+function mp_ipo_default() {
+    return array(
+        'updated' => '2026-09-05',
+        'ipos' => array(
+            array(
+                'slug' => 'qualance-international', 'name' => 'Qualance International Ltd',
+                'open_date' => '2026-09-04', 'close_date' => '2026-09-07', 'listing_date' => '2026-09-12',
+                'price_min' => 120, 'price_max' => 127, 'lot_size' => 1000, 'issue_size_cr' => 45.11,
+                'exchange' => 'NSE SME', 'type' => 'Fresh issue', 'gmp' => null,
+                'about' => 'Qualance International is a small-cap technology-services company raising primary capital for working capital and general corporate purposes. This is an SME issue, which carries higher liquidity and volatility risk than a mainboard listing.',
+                'strengths' => array('Asset-light services model with recurring client revenue', 'Fresh issue - proceeds go into the business, not to selling shareholders'),
+                'risks' => array('SME listings are thinly traded and can move sharply after listing', 'Client concentration is common in small IT-services firms - check the RHP', 'Small absolute issue size limits institutional participation'),
+                'watch' => array('Subscription figures on the final day, especially the retail and NII portions', 'The grey-market premium in the last two days before listing', 'FY revenue growth and margin trend in the RHP'),
+                'financials' => array(),
+            ),
+            array(
+                'slug' => 'lgc-projects', 'name' => 'LGC Projects Ltd',
+                'open_date' => '2026-09-08', 'close_date' => '2026-09-11', 'listing_date' => '2026-09-16',
+                'price_min' => 138, 'price_max' => 146, 'lot_size' => 1000, 'issue_size_cr' => 62.4,
+                'exchange' => 'NSE SME', 'type' => 'Fresh issue + OFS', 'gmp' => null,
+                'about' => 'LGC Projects is an infrastructure and civil-construction contractor. The issue is a mix of a fresh issue and an offer for sale, so part of the money goes to existing shareholders.',
+                'strengths' => array('Order book gives near-term revenue visibility - confirm the figure in the RHP', 'Operates in a sector with sustained government capex'),
+                'risks' => array('Construction firms carry high working-capital needs and receivable risk', 'Part of the issue is an OFS - that portion does not strengthen the balance sheet', 'Execution and input-cost risk on fixed-price contracts'),
+                'watch' => array('Debt level and interest cover after the fresh issue', 'Client mix - government vs private, and geographic concentration', 'Day-3 subscription and anchor-book quality'),
+                'financials' => array(),
+            ),
+            array(
+                'slug' => 'vinod-ironworld', 'name' => 'Vinod Ironworld Ltd',
+                'open_date' => '2026-09-08', 'close_date' => '2026-09-11', 'listing_date' => '2026-09-16',
+                'price_min' => 84, 'price_max' => 84, 'lot_size' => 1600, 'issue_size_cr' => 30.16,
+                'exchange' => 'NSE SME', 'type' => 'Fresh issue', 'gmp' => null,
+                'about' => 'Vinod Ironworld manufactures fabricated steel structures and equipment. This is a fixed-price SME issue.',
+                'strengths' => array('Fixed-price issue removes price-band uncertainty', 'Fresh issue funds capacity expansion'),
+                'risks' => array('Steel input prices are volatile and can compress margins', 'Fixed-price SME issues often see muted institutional interest', 'Cyclical end-markets tied to capex'),
+                'watch' => array('Capacity-utilisation figures and the expansion plan in the RHP', 'Retail subscription on the final day', 'Post-listing volume and delivery percentage'),
+                'financials' => array(),
+            ),
+        ),
+    );
+}
+function mp_ipo_data() {
+    $d = get_option('mp_ipo_data');
+    if (!is_array($d) || empty($d['ipos'])) $d = mp_ipo_default();
+    return $d;
+}
+function mp_ipo_status($ipo) {
+    if (!empty($ipo['status'])) return $ipo['status'];
+    $t = gmdate('Y-m-d', time() + 19800);
+    $o = $ipo['open_date'] ?? ''; $c = $ipo['close_date'] ?? ''; $l = $ipo['listing_date'] ?? '';
+    if ($l && $t >= $l) return 'listed';
+    if ($c && $t > $c) return 'closed';
+    if ($o && $t >= $o && (!$c || $t <= $c)) return 'open';
+    if ($o && $t < $o) return 'upcoming';
+    return 'listed';
+}
+function mp_ipo_list() {
+    $out = array();
+    foreach (mp_ipo_data()['ipos'] as $ipo) {
+        if (empty($ipo['slug']) || empty($ipo['name'])) continue;
+        $ipo['status'] = mp_ipo_status($ipo);
+        $ipo['min_investment'] = !empty($ipo['lot_size']) && !empty($ipo['price_max'])
+            ? (int) round($ipo['lot_size'] * $ipo['price_max']) : null;
+        $out[] = $ipo;
+    }
+    return $out;
+}
+function mp_ipo_get($slug) {
+    foreach (mp_ipo_list() as $ipo) if ($ipo['slug'] === $slug) return $ipo;
+    return null;
+}
+function mp_ipo_ctx_slug() {
+    $obj = get_queried_object();
+    if (!($obj instanceof WP_Post) || $obj->post_name !== 'ipo') return '';
+    $s = sanitize_title((string) get_query_var('mp_ipo'));
+    return ($s && mp_ipo_get($s)) ? $s : '';
+}
+function mp_ipo_is_page() {
+    $obj = get_queried_object();
+    return ($obj instanceof WP_Post) && $obj->post_name === 'ipo' && $obj->post_type === 'page';
+}
+
+/* ---- admin: editable JSON ------------------------------------------- */
+add_action('admin_init', function () {
+    register_setting('reading', 'mp_ipo_data_json', array('type' => 'string'));
+    add_settings_field('mp_ipo_data_json', 'IPO data (JSON)', function () {
+        $cur = get_option('mp_ipo_data'); if (!is_array($cur)) $cur = mp_ipo_default();
+        echo '<textarea name="mp_ipo_data_json" rows="8" class="large-text code" placeholder=\'{"updated":"YYYY-MM-DD","ipos":[{"slug":"...","name":"...","open_date":"...","close_date":"...","listing_date":"...","price_min":0,"price_max":0,"lot_size":0,"issue_size_cr":0,"exchange":"NSE SME","about":"...","strengths":["..."],"risks":["..."],"watch":["..."]}]}\'></textarea>';
+        echo '<p class="description">The IPO calendar + analysis. Paste updated JSON to replace it; leave blank to keep the current data. Last updated: <strong>' . esc_html($cur['updated'] ?? '?') . '</strong>. ' . count($cur['ipos'] ?? array()) . ' IPO(s) loaded.</p>';
+    }, 'reading');
+});
+add_action('update_option_mp_ipo_data_json', function ($old, $new) {
+    $j = json_decode((string) $new, true);
+    if (is_array($j) && !empty($j['ipos'])) update_option('mp_ipo_data', $j, '', false);
+    delete_option('mp_ipo_data_json');
+}, 10, 2);
+
+/* ---- rewrite: /ipo/<slug>/ ---------------------------------------- */
+add_action('init', function () {
+    add_rewrite_rule('^ipo/([a-z0-9][a-z0-9-]+)/?$', 'index.php?pagename=ipo&mp_ipo=$matches[1]', 'top');
+    if (get_option('mp_ipo_rw_v') !== '1') { flush_rewrite_rules(false); update_option('mp_ipo_rw_v', '1'); }
+}, 21);
+add_filter('query_vars', function ($v) { $v[] = 'mp_ipo'; return $v; });
+add_filter('redirect_canonical', function ($r) { return get_query_var('mp_ipo') ? false : $r; });
+add_action('template_redirect', function () {
+    if (!mp_ipo_is_page()) return;
+    $raw = sanitize_title((string) get_query_var('mp_ipo'));
+    if ($raw && !mp_ipo_get($raw)) { wp_safe_redirect(home_url('/ipo/'), 301); exit; }
+    do_action('litespeed_control_set_ttl', 900);
+    header('Cache-Control: public, max-age=900, s-maxage=900');
+}, 9);
+
+/* ensure the /ipo/ page exists */
+add_action('init', function () {
+    if (get_option('mp_ipo_page_v') === '1') return;
+    if (wp_doing_ajax() || wp_doing_cron() || (defined('REST_REQUEST') && REST_REQUEST)) return;
+    $p = get_page_by_path('ipo');
+    if (!$p) {
+        $author = function_exists('mp_eeat_user_id') ? mp_eeat_user_id('deepak') : 0;
+        wp_insert_post(array('post_type' => 'page', 'post_status' => 'publish', 'post_name' => 'ipo',
+            'post_title' => 'IPO in India 2026 - Upcoming, Open, Closed & Listed IPOs',
+            'post_author' => $author ?: 1,
+            'post_content' => "<p>Track every mainboard and SME IPO in India - dates, price band, issue size and a plain-language read on what to check before you apply.</p>\n[mp_ipo]"));
+    } elseif (strpos((string) $p->post_content, '[mp_ipo]') === false) {
+        wp_update_post(array('ID' => $p->ID, 'post_content' => $p->post_content . "\n[mp_ipo]"));
+    }
+    update_option('mp_ipo_page_v', '1');
+    flush_rewrite_rules(false);
+}, 30);
+
+/* ---- helpers ----------------------------------------------------- */
+function mp_ipo_badge($status) {
+    $m = array('upcoming' => array('Upcoming', '#6366f1'), 'open' => array('Open', '#16a34a'),
+        'closed' => array('Closed', '#64748b'), 'listed' => array('Listed', '#0ea5e9'));
+    $x = $m[$status] ?? $m['listed'];
+    return '<span class="mp-ipo__badge" style="background:' . $x[1] . '">' . $x[0] . '</span>';
+}
+function mp_ipo_fmt_date($d) {
+    $t = strtotime($d);
+    return $t ? date('j M Y', $t) : $d;
+}
+function mp_ipo_news($name) {
+    $q = get_posts(array('numberposts' => 4, 'post_status' => 'publish', 's' => $name,
+        'orderby' => 'date', 'order' => 'DESC'));
+    if (!$q) {
+        $t = get_term_by('slug', 'ipos', 'category');
+        if ($t) $q = get_posts(array('numberposts' => 4, 'post_status' => 'publish', 'category' => $t->term_id));
+    }
+    return $q;
+}
+
+/* ---- shortcode: list OR detail --------------------------------- */
+add_shortcode('mp_ipo', function () {
+    $slug = mp_ipo_ctx_slug();
+    return $slug ? mp_ipo_render_detail(mp_ipo_get($slug)) : mp_ipo_render_list();
+});
+
+function mp_ipo_render_list() {
+    $ipos = mp_ipo_list();
+    $groups = array('open' => array(), 'upcoming' => array(), 'closed' => array(), 'listed' => array());
+    foreach ($ipos as $i) $groups[$i['status']][] = $i;
+    $order = array('open' => 'Open', 'upcoming' => 'Upcoming', 'closed' => 'Closed', 'listed' => 'Recently listed');
+    $data = mp_ipo_data();
+    ob_start(); ?>
+<div class="mp-ipo">
+  <div class="mp-ipo__tabs" role="tablist">
+    <?php foreach ($order as $k => $lbl) : ?>
+      <button type="button" class="<?php echo $k === 'open' ? 'on' : ''; ?>" data-tab="<?php echo $k; ?>"><?php echo esc_html($lbl); ?> <span><?php echo count($groups[$k]); ?></span></button>
+    <?php endforeach; ?>
+  </div>
+  <?php foreach ($order as $k => $lbl) : ?>
+    <div class="mp-ipo__panel" data-panel="<?php echo $k; ?>"<?php echo $k === 'open' ? '' : ' hidden'; ?>>
+      <?php if (empty($groups[$k])) : ?>
+        <p class="mp-ipo__empty">No <?php echo esc_html(strtolower($lbl)); ?> IPOs listed right now.</p>
+      <?php else : foreach ($groups[$k] as $i) : ?>
+        <a class="mp-ipo__card" href="<?php echo esc_url(home_url('/ipo/' . $i['slug'] . '/')); ?>">
+          <div class="mp-ipo__card-top">
+            <strong><?php echo esc_html($i['name']); ?></strong>
+            <?php echo mp_ipo_badge($i['status']); ?>
+          </div>
+          <div class="mp-ipo__card-grid">
+            <div><span>Dates</span><?php echo esc_html(mp_ipo_fmt_date($i['open_date'])); ?> &ndash; <?php echo esc_html(mp_ipo_fmt_date($i['close_date'])); ?></div>
+            <div><span>Price band</span><?php echo $i['price_min'] == $i['price_max'] ? '&#8377;' . esc_html($i['price_max']) : '&#8377;' . esc_html($i['price_min']) . ' &ndash; &#8377;' . esc_html($i['price_max']); ?></div>
+            <div><span>Issue size</span>&#8377;<?php echo esc_html($i['issue_size_cr']); ?> Cr</div>
+            <div><span>Exchange</span><?php echo esc_html($i['exchange']); ?></div>
+            <?php if (!empty($i['min_investment'])) : ?><div><span>Min investment</span>&#8377;<?php echo number_format($i['min_investment']); ?></div><?php endif; ?>
+          </div>
+        </a>
+      <?php endforeach; endif; ?>
+    </div>
+  <?php endforeach; ?>
+  <p class="mp-ipo__updated">IPO calendar last updated <?php echo esc_html(mp_ipo_fmt_date($data['updated'] ?? gmdate('Y-m-d'))); ?>. Dates and price bands are set by the company and the exchanges and can change &mdash; always confirm on the exchange or registrar website before applying.</p>
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and educational portal. Not SEBI-registered investment advice. IPO investing carries risk of capital loss; read the offer document (RHP) and consult a SEBI-registered adviser before applying.</div>
+</div>
+<script>
+(function(){
+  var R = document.querySelector('.mp-ipo'); if(!R) return;
+  R.querySelectorAll('.mp-ipo__tabs button').forEach(function(b){
+    b.addEventListener('click', function(){
+      R.querySelectorAll('.mp-ipo__tabs button').forEach(function(x){x.classList.remove('on');});
+      b.classList.add('on');
+      var t = b.getAttribute('data-tab');
+      R.querySelectorAll('.mp-ipo__panel').forEach(function(p){ p.hidden = p.getAttribute('data-panel') !== t; });
+    });
+  });
+}());
+</script>
+<?php echo mp_ipo_css(); ?>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_ipo_render_detail($i) {
+    if (!$i) return '<p>IPO not found. <a href="' . esc_url(home_url('/ipo/')) . '">See all IPOs</a>.</p>';
+    $news = mp_ipo_news($i['name']);
+    $band = $i['price_min'] == $i['price_max'] ? '&#8377;' . $i['price_max'] : '&#8377;' . $i['price_min'] . ' &ndash; &#8377;' . $i['price_max'];
+    ob_start(); ?>
+<div class="mp-ipo mp-ipo--detail">
+  <p class="mp-ipo__crumb"><a href="<?php echo esc_url(home_url('/ipo/')); ?>">&larr; All IPOs</a> &middot; <?php echo mp_ipo_badge($i['status']); ?></p>
+
+  <div class="mp-ipo__tablewrap">
+  <table class="mp-ipo__tbl">
+    <tbody>
+      <tr><th>IPO open</th><td><?php echo esc_html(mp_ipo_fmt_date($i['open_date'])); ?></td><th>IPO close</th><td><?php echo esc_html(mp_ipo_fmt_date($i['close_date'])); ?></td></tr>
+      <tr><th>Listing date</th><td><?php echo esc_html(mp_ipo_fmt_date($i['listing_date'])); ?></td><th>Exchange</th><td><?php echo esc_html($i['exchange']); ?></td></tr>
+      <tr><th>Price band</th><td><?php echo $band; ?></td><th>Lot size</th><td><?php echo esc_html(number_format((int) $i['lot_size'])); ?> shares</td></tr>
+      <tr><th>Issue size</th><td>&#8377;<?php echo esc_html($i['issue_size_cr']); ?> Cr</td><th>Issue type</th><td><?php echo esc_html($i['type'] ?? '&mdash;'); ?></td></tr>
+      <?php if (!empty($i['min_investment'])) : ?><tr><th>Min investment</th><td>&#8377;<?php echo number_format($i['min_investment']); ?></td><th>GMP</th><td><?php echo $i['gmp'] !== null && $i['gmp'] !== '' ? '&#8377;' . esc_html($i['gmp']) . ' <small>(grey market, unofficial)</small>' : 'Not tracked'; ?></td></tr><?php endif; ?>
+    </tbody>
+  </table>
+  </div>
+
+  <?php if (!empty($i['about'])) : ?>
+    <h2>About <?php echo esc_html($i['name']); ?></h2>
+    <p><?php echo wp_kses_post($i['about']); ?></p>
+  <?php endif; ?>
+
+  <?php if (!empty($i['strengths']) || !empty($i['risks'])) : ?>
+  <div class="mp-ipo__pc">
+    <?php if (!empty($i['strengths'])) : ?>
+    <div class="mp-ipo__pc-col mp-ipo__pc-good">
+      <h3>Strengths</h3><ul><?php foreach ($i['strengths'] as $s) echo '<li>' . wp_kses_post($s) . '</li>'; ?></ul>
+    </div>
+    <?php endif; ?>
+    <?php if (!empty($i['risks'])) : ?>
+    <div class="mp-ipo__pc-col mp-ipo__pc-bad">
+      <h3>Risks</h3><ul><?php foreach ($i['risks'] as $s) echo '<li>' . wp_kses_post($s) . '</li>'; ?></ul>
+    </div>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+
+  <?php if (!empty($i['watch'])) : ?>
+    <h2>What to watch</h2>
+    <ul class="mp-ipo__watch"><?php foreach ($i['watch'] as $s) echo '<li>' . wp_kses_post($s) . '</li>'; ?></ul>
+  <?php endif; ?>
+
+  <?php if (!empty($i['financials'])) : ?>
+    <h2>Key financials</h2>
+    <div class="mp-ipo__tablewrap">
+    <table class="mp-ipo__tbl">
+      <thead><tr><th>Period</th><th>Revenue (&#8377; Cr)</th><th>PAT (&#8377; Cr)</th></tr></thead>
+      <tbody><?php foreach ($i['financials'] as $r) : ?>
+        <tr><td><?php echo esc_html($r['year'] ?? ''); ?></td><td><?php echo esc_html($r['revenue_cr'] ?? '&mdash;'); ?></td><td><?php echo esc_html($r['pat_cr'] ?? '&mdash;'); ?></td></tr>
+      <?php endforeach; ?></tbody>
+    </table>
+    </div>
+  <?php else : ?>
+    <h2>Key financials</h2>
+    <p>Detailed financials for this issue are in the company&rsquo;s Red Herring Prospectus (RHP), filed with SEBI and available on the exchange and registrar websites. We add the headline numbers here once the desk has reviewed the RHP.</p>
+  <?php endif; ?>
+
+  <h2>MoneyPuran coverage</h2>
+  <?php if ($news) : ?>
+    <ul class="mp-ipo__news">
+      <?php foreach ($news as $p) : ?>
+        <li><a href="<?php echo esc_url(get_permalink($p)); ?>"><?php echo esc_html(get_the_title($p)); ?></a>
+          <span><?php echo esc_html(get_the_date('j M Y', $p)); ?></span></li>
+      <?php endforeach; ?>
+    </ul>
+  <?php else : ?>
+    <p>No MoneyPuran articles on this IPO yet. See all <a href="<?php echo esc_url(home_url('/category/ipos/')); ?>">IPO news</a>.</p>
+  <?php endif; ?>
+
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and educational portal. Not SEBI-registered investment advice. The notes above are an editorial reading of public disclosures, not a buy/avoid recommendation. IPO investing can lose money; read the RHP and consult a SEBI-registered adviser.</div>
+</div>
+<?php echo mp_ipo_css(); ?>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_ipo_css() {
+    static $done = false; if ($done) return ''; $done = true;
+    return '<style id="mp-ipo-css">
+.mp-ipo{font-size:15px;line-height:1.6;margin:8px 0}
+.mp-ipo h2{font-size:20px;margin:24px 0 10px}.mp-ipo h3{font-size:15px;margin:0 0 8px}
+.mp-ipo__tabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+.mp-ipo__tabs button{font-size:13px;padding:6px 12px;border:1px solid var(--mp-border,#e2e8f0);border-radius:999px;background:none;color:var(--mp-ink,#0f172a);cursor:pointer}
+.mp-ipo__tabs button.on{background:var(--mp-ink,#0f172a);color:#fff;border-color:var(--mp-ink,#0f172a)}
+.mp-ipo__tabs button span{opacity:.6;font-size:11px}
+.mp-ipo__card{display:block;border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:14px 16px;margin-bottom:10px;text-decoration:none;color:inherit;background:var(--mp-surface,#fff)}
+.mp-ipo__card:hover{border-color:var(--mp-muted,#94a3b8)}
+.mp-ipo__card-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.mp-ipo__card-top strong{font-size:15px}
+.mp-ipo__badge{font-size:11px;color:#fff;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.mp-ipo__card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 16px;font-size:13.5px}
+.mp-ipo__card-grid span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-ipo__empty,.mp-ipo__updated{color:var(--mp-muted,#64748b);font-size:13px}
+.mp-ipo__updated{margin-top:14px}
+.mp-ipo__dhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.mp-ipo__dhead h1{margin:0;font-size:26px}
+.mp-ipo__crumb{font-size:13px;margin:0 0 8px}
+.mp-ipo__tablewrap{overflow-x:auto}
+.mp-ipo__tbl{width:100%;border-collapse:collapse;margin:8px 0;font-size:14px}
+.mp-ipo__tbl th,.mp-ipo__tbl td{padding:9px 12px;border-bottom:1px solid var(--mp-border,#eef1f4);text-align:left}
+.mp-ipo__tbl th{color:var(--mp-muted,#64748b);font-weight:600;font-size:12.5px}
+.mp-ipo__pc{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:8px 0}
+.mp-ipo__pc-col{border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;padding:12px 14px}
+.mp-ipo__pc-good{border-left:3px solid #16a34a}.mp-ipo__pc-bad{border-left:3px solid #dc2626}
+.mp-ipo__pc-col ul,.mp-ipo__watch,.mp-ipo__news{margin:0;padding-left:18px}
+.mp-ipo__pc-col li,.mp-ipo__watch li{margin-bottom:6px;font-size:14px}
+.mp-ipo__news{list-style:none;padding:0}
+.mp-ipo__news li{padding:7px 0;border-bottom:1px solid var(--mp-border,#eef1f4)}
+.mp-ipo__news span{display:block;font-size:11.5px;color:var(--mp-muted,#64748b)}
+.mp-sebi-box{border:1px solid var(--mp-border,#e2e8f0);border-left:3px solid #d97706;border-radius:8px;padding:11px 14px;margin:20px 0;font-size:12.5px;line-height:1.55;color:var(--mp-muted,#64748b);background:var(--mp-surface2,#f8fafc)}
+@media(max-width:560px){.mp-ipo__pc{grid-template-columns:1fr}}
+html[data-theme="dark"] .mp-ipo__card{background:#0f172a;border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-ipo__pc-col,html[data-theme="dark"] .mp-sebi-box{background:#111827;border-color:rgba(255,255,255,.08)}
+</style>';
+}
+
+/* ---- SEO: title / meta / schema / sitemap ----------------------- */
+add_filter('rank_math/frontend/title', function ($t) {
+    if (!mp_ipo_is_page()) return $t;
+    $s = mp_ipo_ctx_slug();
+    if ($s) { $i = mp_ipo_get($s); return $i['name'] . ' IPO 2026 - Date, Price, GMP, Review | MoneyPuran'; }
+    return 'IPO in India 2026 - Upcoming, Open, Closed & Listed IPO Calendar | MoneyPuran';
+});
+add_filter('rank_math/frontend/description', function ($d) {
+    if (!mp_ipo_is_page()) return $d;
+    $s = mp_ipo_ctx_slug();
+    if ($s) { $i = mp_ipo_get($s); return $i['name'] . ' IPO - open ' . mp_ipo_fmt_date($i['open_date']) . ', price band ' . ($i['price_min'] == $i['price_max'] ? 'Rs ' . $i['price_max'] : 'Rs ' . $i['price_min'] . '-' . $i['price_max']) . ', ' . $i['exchange'] . '. Dates, lot size, issue details and a plain-language read on the strengths and risks.'; }
+    return 'The full India IPO calendar for 2026 - upcoming, open, closed and recently listed mainboard and SME IPOs with dates, price bands, issue size and a plain-language review.';
+});
+add_filter('the_title', function ($title, $post_id = 0) {
+    if (is_admin() || !in_the_loop() || !is_main_query()) return $title;
+    if (mp_ipo_is_page() && get_post_field('post_name', $post_id) === 'ipo') {
+        $s = mp_ipo_ctx_slug();
+        if ($s) { $i = mp_ipo_get($s); return $i['name'] . ' IPO'; }
+    }
+    return $title;
+}, 10, 2);
+
+add_action('wp_head', function () {
+    if (!mp_ipo_is_page()) return;
+    $s = mp_ipo_ctx_slug();
+    $crumbs = array(
+        array('@type' => 'ListItem', 'position' => 1, 'name' => 'Home', 'item' => home_url('/')),
+        array('@type' => 'ListItem', 'position' => 2, 'name' => 'IPO', 'item' => home_url('/ipo/')),
+    );
+    if ($s) {
+        $i = mp_ipo_get($s);
+        $crumbs[] = array('@type' => 'ListItem', 'position' => 3, 'name' => $i['name'] . ' IPO', 'item' => home_url('/ipo/' . $s . '/'));
+        $faq = array(
+            array('When does the ' . $i['name'] . ' IPO open and close?', 'The ' . $i['name'] . ' IPO opens on ' . mp_ipo_fmt_date($i['open_date']) . ' and closes on ' . mp_ipo_fmt_date($i['close_date']) . '. It is expected to list on ' . mp_ipo_fmt_date($i['listing_date']) . ' on the ' . $i['exchange'] . '.'),
+            array('What is the ' . $i['name'] . ' IPO price band and lot size?', 'The price band is ' . ($i['price_min'] == $i['price_max'] ? 'Rs ' . $i['price_max'] : 'Rs ' . $i['price_min'] . ' to Rs ' . $i['price_max']) . ' per share and the lot size is ' . number_format((int) $i['lot_size']) . ' shares' . (!empty($i['min_investment']) ? ', so the minimum investment is about Rs ' . number_format($i['min_investment']) . '.' : '.')),
+            array('Should I apply to the ' . $i['name'] . ' IPO?', 'MoneyPuran does not give buy or avoid calls. This page lists the issue&rsquo;s strengths and risks from public disclosures so you can decide with a SEBI-registered adviser. IPO investing can lose money.'),
+        );
+        $faqNode = array('@context' => 'https://schema.org', '@type' => 'FAQPage', 'mainEntity' => array());
+        foreach ($faq as $qa) $faqNode['mainEntity'][] = array('@type' => 'Question', 'name' => $qa[0], 'acceptedAnswer' => array('@type' => 'Answer', 'text' => wp_strip_all_tags($qa[1])));
+        echo "\n<script type=\"application/ld+json\">" . wp_json_encode($faqNode, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+    } else {
+        $items = array();
+        $pos = 1;
+        foreach (mp_ipo_list() as $i) {
+            $items[] = array('@type' => 'ListItem', 'position' => $pos++, 'name' => $i['name'] . ' IPO', 'url' => home_url('/ipo/' . $i['slug'] . '/'));
+        }
+        $listNode = array('@context' => 'https://schema.org', '@type' => 'ItemList', 'itemListElement' => $items);
+        echo "\n<script type=\"application/ld+json\">" . wp_json_encode($listNode, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+    }
+    $bc = array('@context' => 'https://schema.org', '@type' => 'BreadcrumbList', 'itemListElement' => $crumbs);
+    echo '<script type="application/ld+json">' . wp_json_encode($bc, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+}, 4);
+
+add_action('parse_request', function () {
+    $path = isset($_SERVER['REQUEST_URI']) ? trim((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/') : '';
+    if ($path !== 'ipo-sitemap.xml') return;
+    if (!headers_sent()) { status_header(200); header('Content-Type: application/xml; charset=UTF-8', true); header('X-Robots-Tag: noindex', true); }
+    $now = gmdate('c');
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+    echo '  <url><loc>' . esc_url(home_url('/ipo/')) . '</loc><lastmod>' . $now . '</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>' . "\n";
+    foreach (mp_ipo_list() as $i) {
+        echo '  <url><loc>' . esc_url(home_url('/ipo/' . $i['slug'] . '/')) . '</loc><lastmod>' . $now . '</lastmod><changefreq>daily</changefreq><priority>0.6</priority></url>' . "\n";
+    }
+    echo '</urlset>';
+    exit;
+}, 0);
+add_filter('robots_txt', function ($o) {
+    if (strpos($o, 'ipo-sitemap.xml') === false) $o .= "\nSitemap: " . home_url('/ipo-sitemap.xml') . "\n";
+    return $o;
+}, 21);
+add_filter('rank_math/sitemap/index', function ($links) {
+    $u = home_url('/ipo-sitemap.xml');
+    if (strpos($links, $u) === false) $links .= '<sitemap><loc>' . esc_url($u) . '</loc><lastmod>' . gmdate('c') . '</lastmod></sitemap>' . "\n";
+    return $links;
+});
