@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.31.2
+ * Version: 1.31.3
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -7023,12 +7023,18 @@ add_shortcode('mp_commodity_page', function ($atts) {
   var search = ROOT.querySelector('[data-role=citysearch]');
   var data = [];
   try { data = JSON.parse((document.querySelector('[data-role=citydata]')||{}).textContent) || []; } catch(e){}
+  var curCity = ROOT.getAttribute('data-city') || '';
   function render(q){
     q = (q||'').trim().toLowerCase();
+    var html = '';
+    if (!q || 'india'.indexOf(q) === 0 || 'all india'.indexOf(q) === 0) {
+      html += '<li><a href="/'+hub+'/"'+(curCity?'':' aria-current="true"')+'>India <span>All-India reference rate</span></a></li>';
+    }
     var rows = data.filter(function(c){ return !q || (c.n+' '+c.s).toLowerCase().indexOf(q) > -1; }).slice(0, 80);
-    listEl.innerHTML = rows.map(function(c){
-      return '<li><a href="/'+hub+'/'+c.k+'/">'+c.n+' <span>'+c.s+'</span></a></li>';
-    }).join('') || '<li class="mp-comm__modal-none">No match &mdash; showing the India rate</li>';
+    html += rows.map(function(c){
+      return '<li><a href="/'+hub+'/'+c.k+'/"'+(c.k===curCity?' aria-current="true"':'')+'>'+c.n+' <span>'+c.s+'</span></a></li>';
+    }).join('');
+    listEl.innerHTML = html || '<li class="mp-comm__modal-none">No match &mdash; try a city or country name</li>';
   }
   function openM(){ if(!modal) return; modal.hidden=false; render(''); if(search){ search.value=''; search.focus(); } }
   function closeM(){ if(modal) modal.hidden=true; }
@@ -7429,6 +7435,7 @@ add_action('wp_head', function () {
 .mp-comm__faq p{margin:8px 0 0;font-size:14px}
 /* modal */
 .mp-comm__modal{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.55);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px}
+.mp-comm__modal[hidden]{display:none!important}
 .mp-comm__modal-box{background:var(--mp-surface,#fff);border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;width:100%;max-width:440px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
 .mp-comm__modal-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--mp-border,#e2e8f0)}
 .mp-comm__modal-head button{border:0;background:none;font-size:22px;line-height:1;cursor:pointer;color:var(--mp-muted,#64748b)}
