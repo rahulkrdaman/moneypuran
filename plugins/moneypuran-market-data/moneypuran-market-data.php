@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.31.0
+ * Version: 1.31.1
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -6910,7 +6910,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
     <p>GST on <?php echo esc_html(strtolower($M)); ?> is a uniform <strong>3%</strong> across <?php echo esc_html($d['cityState']); ?> and the rest of India, so the price you pay in <?php echo esc_html($cityDisplay); ?> differs from other cities mainly by the local retail premium jewellers apply over the IBJA benchmark and by making-charge conventions &mdash; typically 1&ndash;2% on the metal value.</p>
   <?php else : ?>
     <p>India&rsquo;s <?php echo esc_html(strtolower($M)); ?> rate is set by the international price in US dollars, the USD/INR exchange rate, import duty and a uniform 3% GST. City-to-city differences are small and come from local jewellers&rsquo; association benchmarks, the regional retail premium, and making-charge conventions rather than tax. The India Bullion &amp; Jewellers Association (IBJA) rate published from Mumbai is the benchmark most jewellers follow.</p>
-    <p>Pick your city above &mdash; or use <strong>More cities &amp; countries</strong> &mdash; for a localised rate. Popular: <?php
+    <p>Use the <strong>location selector</strong> at the top for any Indian city or a country like Dubai, Pakistan, Nepal or the UK. Popular Indian cities: <?php
       $links = array();
       foreach ($featured as $sl => $meta) $links[] = '<a href="' . esc_url(home_url('/' . $hub . '/' . $sl . '/')) . '">' . esc_html($meta[0]) . '</a>';
       echo wp_kses_post(implode(' &middot; ', $links));
