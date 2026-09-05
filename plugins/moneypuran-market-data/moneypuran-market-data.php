@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.31.3
+ * Version: 1.32.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -6737,6 +6737,9 @@ add_shortcode('mp_commodity_page', function ($atts) {
     $atts = shortcode_atts(array('metal' => 'gold'), $atts, 'mp_commodity_page');
     list($ctxMetal, $citySlug, $cityDisplay) = mp_comm_ctx();
     $metal = $ctxMetal ?: (in_array($atts['metal'], array('gold', 'silver', 'platinum'), true) ? $atts['metal'] : 'gold');
+
+    if (mp_comm_tool_slug() === 'calculator') return mp_comm_calculator_render($metal);
+
     $d = mp_comm_data($metal, $citySlug);
     $M = mp_comm_metal_label($metal);
     $whereLabel = ($cityDisplay ?: 'India');
@@ -6859,9 +6862,10 @@ add_shortcode('mp_commodity_page', function ($atts) {
         <p>Enter any amount to see how much <?php echo esc_html(strtolower($mlab)); ?> you can get</p>
         <div class="mp-comm__worth-row">
           <input type="number" data-role="amt" placeholder="10000" min="0" step="100">
-          <button type="button" data-role="amtgo">Try now</button>
+          <button type="button" data-role="amtgo">Calculate here</button>
         </div>
         <p class="mp-comm__worth-out" data-role="amt-out"></p>
+        <a class="mp-comm__worth-full" href="<?php echo esc_url(home_url('/' . $hub . '/calculator/')); ?>">Open the full <?php echo esc_html(strtolower($mlab)); ?> calculator &rarr;</a>
       </div>
     </div>
   </div>
@@ -6985,7 +6989,12 @@ add_shortcode('mp_commodity_page', function ($atts) {
       b.classList.add('on'); calc();
     });
     C.addEventListener('input', calc); C.addEventListener('change', calc);
-    var go = C.querySelector('[data-role=amtgo]'); if (go) go.addEventListener('click', calc);
+    var go = C.querySelector('[data-role=amtgo]');
+    if (go) go.addEventListener('click', function(){
+      calc();
+      var a = n((C.querySelector('[data-role=amt]')||{}).value);
+      location.href = '/' + hub + '/calculator/?mode=amount' + (a ? '&amt=' + a : '');
+    });
     calc();
   }
 
@@ -7097,12 +7106,18 @@ add_filter('redirect_canonical', function ($redirect) {
     return get_query_var('mp_city') ? false : $redirect;
 });
 
+/* Tool sub-pages under a hub, e.g. /gold-rate/calculator/ */
+function mp_comm_tool_slug() {
+    $s = strtolower((string) get_query_var('mp_city'));
+    return in_array($s, array('calculator'), true) ? $s : '';
+}
+
 /* Unknown city slug -> 301 to the hub. */
 add_action('template_redirect', function () {
     list($metal, $citySlug) = mp_comm_ctx();
     if (!$metal) return;
     $raw = strtolower((string) get_query_var('mp_city'));
-    if ($raw && !$citySlug) {
+    if ($raw && !$citySlug && !mp_comm_tool_slug()) {
         wp_safe_redirect(home_url('/' . mp_comm_hub_slugs()[$metal] . '/'), 301);
         exit;
     }
@@ -7180,6 +7195,7 @@ add_filter('rank_math/frontend/canonical', function ($c) {
 
 /* ---- JSON-LD: Dataset + BreadcrumbList + FAQPage --------------------- */
 add_action('wp_head', function () {
+    if (function_exists('mp_comm_tool_slug') && mp_comm_tool_slug()) return; // calculator page has its own schema
     $t = mp_comm_titles();
     if (!$t) return;
     $metal = $t['metal']; $citySlug = $t['citySlug']; $cityDisplay = $t['cityDisplay']; $M = $t['M'];
@@ -7339,6 +7355,7 @@ function mp_comm_all_urls() {
     $urls = array();
     foreach (mp_comm_hub_slugs() as $metal => $hub) {
         $urls[] = home_url('/' . $hub . '/');
+        $urls[] = home_url('/' . $hub . '/calculator/');
         // Platinum has little location-level search demand - hub only.
         if ($metal === 'platinum') continue;
         foreach ($slugs as $c) $urls[] = home_url('/' . $hub . '/' . $c . '/');
@@ -7421,6 +7438,7 @@ add_action('wp_head', function () {
 .mp-comm__worth-row input{flex:1;min-width:0;padding:8px;border:1px solid var(--mp-border,#e2e8f0);border-radius:7px;font-size:13px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
 .mp-comm__worth-row button{border:0;background:#16a34a;color:#fff;padding:8px 12px;border-radius:7px;font-size:12.5px;cursor:pointer;white-space:nowrap}
 .mp-comm__worth-out{margin:8px 0 0;font-size:12.5px;font-weight:600;color:var(--mp-ink,#0f172a)}
+.mp-comm__worth-full{display:inline-block;margin-top:8px;font-size:12px;font-weight:600}
 /* tables */
 .mp-comm__tablewrap{overflow-x:auto}
 .mp-comm__table{width:100%;border-collapse:collapse;margin:6px 0;font-variant-numeric:tabular-nums}
@@ -8634,3 +8652,442 @@ add_filter('rank_math/sitemap/index', function ($links) {
     if (strpos($links, $u) === false) $links .= '<sitemap><loc>' . esc_url($u) . '</loc><lastmod>' . gmdate('c') . '</lastmod></sitemap>' . "\n";
     return $links;
 });
+
+
+/* ============================================================================
+ * COMMODITY CALCULATOR PAGES  (v1.32.0)
+ *   /gold-rate/calculator/   /silver-rate/calculator/   /platinum-rate/calculator/
+ *   Dedicated calculator with By-Weight / By-Amount modes PLUS tools no other
+ *   Indian gold site has: fair-price check, old-gold resale value,
+ *   making-charge break-even, and a live multi-city comparison.
+ * ==========================================================================*/
+
+/* per-gram 24K/999 rate for the ~15 comparison cities (India base x regional premium) */
+function mp_calc_city_rates($metal) {
+    $d = mp_comm_data($metal, '');
+    if (!$d) return array();
+    $base = ($metal === 'silver') ? (float) $d['per_g'] : (float) $d['per_g_24k'];
+    $regs = mp_comm_regions();
+    $out = array('India' => round($base, 2));
+    $cities = array('delhi','mumbai','chennai','kolkata','bengaluru','hyderabad','pune','ahmedabad',
+        'jaipur','lucknow','coimbatore','kochi','visakhapatnam','patna','chandigarh');
+    foreach ($cities as $sl) {
+        $rec = mp_comm_lookup($sl);
+        if (!$rec) continue;
+        $prem = (float) $rec[7];
+        $out[$rec[0]] = round($base * (1 + $prem / 100), 2);
+    }
+    return $out;
+}
+
+function mp_comm_calculator_render($metal) {
+    $metal = in_array($metal, array('gold', 'silver', 'platinum'), true) ? $metal : 'gold';
+    $M  = mp_comm_metal_label($metal);
+    $ml = strtolower($M);
+    $d  = mp_comm_data($metal, '');
+    if (!$d) return '<p>Rate data is loading — please refresh in a moment.</p>';
+
+    $rates = mp_calc_city_rates($metal);
+    // purity ratios for this metal
+    if ($metal === 'gold') { $pur = array('24k' => array('24K', 1.0), '22k' => array('22K', 0.916), '18k' => array('18K', 0.75)); }
+    elseif ($metal === 'platinum') { $pur = array('999' => array('PT999', 1.0), '950' => array('PT950', 0.95)); }
+    else { $pur = array('999' => array('999', 1.0)); }
+    $g24 = ($metal === 'silver') ? (float) $d['per_g'] : (float) $d['per_g_24k'];
+
+    ob_start(); ?>
+<div class="mp-calc" data-metal="<?php echo esc_attr($metal); ?>"
+     data-rates='<?php echo esc_attr(wp_json_encode($rates)); ?>'
+     data-purities='<?php echo esc_attr(wp_json_encode($pur)); ?>'
+     data-base='<?php echo esc_attr($g24); ?>'>
+
+  <div class="mp-calc__bar">
+    <div class="mp-calc__metals">
+      <?php foreach (array('gold' => 'Gold', 'silver' => 'Silver', 'platinum' => 'Platinum') as $mk => $lbl) : ?>
+        <a href="<?php echo esc_url(home_url('/' . mp_comm_hub_slugs()[$mk] . '/calculator/')); ?>" class="<?php echo $mk === $metal ? 'on' : ''; ?>"><?php echo esc_html($lbl); ?></a>
+      <?php endforeach; ?>
+    </div>
+    <div class="mp-calc__citywrap">
+      <label>City</label>
+      <select data-role="city">
+        <?php foreach ($rates as $cty => $r) : ?><option value="<?php echo esc_attr($cty); ?>"<?php echo $cty === 'India' ? '' : ''; ?>><?php echo esc_html($cty); ?></option><?php endforeach; ?>
+      </select>
+      <span class="mp-calc__rate">Rate: <b data-role="rate">&#8377;<?php echo number_format($g24, 0); ?></b>/g <span data-role="ratepur">24K</span></span>
+    </div>
+  </div>
+
+  <?php /* ---- primary calculator ---- */ ?>
+  <div class="mp-calc__main">
+    <div class="mp-calc__tabs" role="tablist">
+      <button type="button" class="on" data-mode="weight">Calculate by weight</button>
+      <button type="button" data-mode="amount">Calculate by amount</button>
+    </div>
+    <div class="mp-calc__grid">
+      <div class="mp-calc__in">
+        <div class="mp-calc__field"><label><?php echo esc_html($M); ?> purity</label>
+          <span class="mp-calc__seg" data-role="pty">
+            <?php $f = true; foreach ($pur as $pk => $pv) : ?><button type="button" data-p="<?php echo esc_attr($pk); ?>"<?php echo $f ? ' class="on"' : ''; ?>><?php echo esc_html($pv[0]); ?></button><?php $f = false; endforeach; ?>
+          </span>
+        </div>
+        <div class="mp-calc__field" data-when="weight"><label>Weight (grams)</label><input type="number" data-role="wt" value="10" min="0" step="0.1"></div>
+        <div class="mp-calc__field" data-when="amount" hidden><label>Amount (&#8377;)</label><input type="number" data-role="amt" value="100000" min="0" step="500"></div>
+        <div class="mp-calc__field"><label>Making charges (%)</label><input type="number" data-role="mk" value="12" min="0" step="1"></div>
+        <div class="mp-calc__field"><label>GST</label>
+          <label class="mp-calc__switch"><input type="checkbox" data-role="gst" checked> <span>Include 3%</span></label>
+        </div>
+      </div>
+      <div class="mp-calc__out">
+        <span class="mp-calc__out-lbl" data-role="o-lbl">Total amount</span>
+        <strong class="mp-calc__out-big" data-role="o-big">&#8377;0</strong>
+        <div class="mp-calc__out-break">
+          <div><span data-role="b1k">Base value</span><span data-role="b1v">&#8377;0</span></div>
+          <div><span data-role="b2k">Making charges</span><span data-role="b2v">&#8377;0</span></div>
+          <div data-role="b3"><span>GST (3%)</span><span data-role="b3v">&#8377;0</span></div>
+          <div class="mp-calc__out-tot"><span data-role="b4k"><?php echo esc_html($M); ?> weight</span><span data-role="b4v">0 g</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <?php /* ---- UNIQUE tool 1: fair price ---- */ ?>
+  <h2>Is your jeweller&rsquo;s price fair?</h2>
+  <p class="mp-calc__lead">Enter what the shop is charging and we&rsquo;ll compare it against the indicative metal value plus a normal making-charge range, so you know if you&rsquo;re being over-charged.</p>
+  <div class="mp-calc__tool" data-tool="fair">
+    <div class="mp-calc__tool-in">
+      <label>Weight (g)<input type="number" data-role="f-wt" value="10" min="0" step="0.1"></label>
+      <label>Purity
+        <select data-role="f-pty"><?php foreach ($pur as $pk => $pv) : ?><option value="<?php echo esc_attr($pk); ?>"><?php echo esc_html($pv[0]); ?></option><?php endforeach; ?></select>
+      </label>
+      <label>Jeweller&rsquo;s final quote (&#8377;)<input type="number" data-role="f-q" placeholder="e.g. 65000" min="0" step="100"></label>
+    </div>
+    <div class="mp-calc__verdict" data-role="f-out"></div>
+  </div>
+
+  <?php /* ---- tool 2: old gold ---- */ ?>
+  <h2>Old <?php echo esc_html($ml); ?> exchange / resale value</h2>
+  <p class="mp-calc__lead">Selling or exchanging old jewellery? Jewellers pay for the metal content only (minus a deduction for melting/testing) &mdash; not the making charges you originally paid.</p>
+  <div class="mp-calc__tool" data-tool="old">
+    <div class="mp-calc__tool-in">
+      <label>Old <?php echo esc_html($ml); ?> weight (g)<input type="number" data-role="o-wt" value="10" min="0" step="0.1"></label>
+      <label>Purity
+        <select data-role="o-pty"><?php foreach ($pur as $pk => $pv) : ?><option value="<?php echo esc_attr($pk); ?>"><?php echo esc_html($pv[0]); ?></option><?php endforeach; ?></select>
+      </label>
+      <label>Jeweller&rsquo;s deduction (%)<input type="number" data-role="o-ded" value="8" min="0" max="30" step="1"></label>
+    </div>
+    <div class="mp-calc__verdict" data-role="o-out"></div>
+  </div>
+
+  <?php if ($metal !== 'silver') : ?>
+  <?php /* ---- tool 3: break-even ---- */ ?>
+  <h2>Making-charge break-even</h2>
+  <p class="mp-calc__lead">Making charges and GST are a sunk cost the moment you buy. This shows how far the <?php echo esc_html($ml); ?> price has to rise before your jewellery is worth what you paid.</p>
+  <div class="mp-calc__tool" data-tool="be">
+    <div class="mp-calc__tool-in">
+      <label>Making charges (%)<input type="number" data-role="be-mk" value="12" min="0" step="1"></label>
+      <label>GST<label class="mp-calc__switch"><input type="checkbox" data-role="be-gst" checked> <span>Include 3%</span></label></label>
+    </div>
+    <div class="mp-calc__verdict" data-role="be-out"></div>
+  </div>
+  <?php endif; ?>
+
+  <?php /* ---- tool 4: compare cities ---- */ ?>
+  <h2>Compare the same purchase across cities</h2>
+  <div class="mp-calc__tool" data-tool="cmp">
+    <div class="mp-calc__tool-in">
+      <label>Weight (g)<input type="number" data-role="c-wt" value="10" min="0" step="0.1"></label>
+      <label>Purity
+        <select data-role="c-pty"><?php foreach ($pur as $pk => $pv) : ?><option value="<?php echo esc_attr($pk); ?>"><?php echo esc_html($pv[0]); ?></option><?php endforeach; ?></select>
+      </label>
+      <label>Making (%)<input type="number" data-role="c-mk" value="12" min="0" step="1"></label>
+    </div>
+    <div class="mp-comm__tablewrap"><table class="mp-comm__table" data-role="c-out"></table></div>
+    <p class="mp-calc__note">Includes 3% GST. City differences reflect the regional retail premium jewellers apply; making charges vary by design and jeweller.</p>
+  </div>
+
+  <?php /* ---- explainer + FAQ (SEO) ---- */ ?>
+  <h2>How the <?php echo esc_html($ml); ?> price is calculated in India</h2>
+  <p>The final price you pay for <?php echo esc_html($ml); ?> jewellery has four parts:</p>
+  <ol>
+    <li><strong>Metal value</strong> = today&rsquo;s per-gram rate for the chosen purity &times; weight in grams. 22K gold is 91.6% of the 24K rate; 18K is 75%.</li>
+    <li><strong>Making (wastage) charges</strong> &mdash; either a percentage of the metal value (commonly 8&ndash;25%) or a flat rate per gram. Intricate and machine-made pieces cost more.</li>
+    <li><strong>GST at 3%</strong> on the metal value plus making charges.</li>
+    <li><strong>Hallmarking</strong> &mdash; a small fixed BIS charge per piece.</li>
+  </ol>
+  <p class="mp-calc__formula"><strong>Formula:</strong> Final price = (rate/g &times; weight) + making charges + 3% GST + hallmarking</p>
+
+  <h2>Frequently asked questions</h2>
+  <div class="mp-comm__faq">
+    <?php foreach (mp_comm_calc_faq($metal, $g24) as $i => $qa) : ?>
+      <details<?php echo $i === 0 ? ' open' : ''; ?>><summary><?php echo esc_html($qa[0]); ?></summary><p><?php echo wp_kses_post($qa[1]); ?></p></details>
+    <?php endforeach; ?>
+  </div>
+
+  <p style="margin-top:16px"><a href="<?php echo esc_url(home_url('/' . mp_comm_hub_slugs()[$metal] . '/')); ?>">&larr; <?php echo esc_html($M); ?> rate today</a></p>
+
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and educational portal. Not SEBI-registered investment advice. Rates are indicative and derived from international prices; the calculator is a planning aid, not a quotation. Confirm the live rate and charges with a hallmarked jeweller before buying.</div>
+</div>
+<?php echo mp_comm_calc_css(); ?>
+<script>
+<?php echo mp_comm_calc_js(); ?>
+</script>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_comm_calc_faq($metal, $g24) {
+    $M = mp_comm_metal_label($metal); $ml = strtolower($M);
+    $r22 = round($g24 * 0.916); $r10_22 = round($g24 * 0.916 * 10); $r10_24 = round($g24 * 10);
+    $out = array(
+        array('What is the ' . $ml . ' calculation formula in India?',
+            'Final price = (per-gram rate for your purity &times; weight in grams) + making charges + 3% GST + a small hallmarking fee. For 22K gold the per-gram rate is 91.6% of the 24K rate; for 18K it is 75%.'),
+    );
+    if ($metal === 'gold') {
+        $out[] = array('How do you calculate the price of 22 carat (22K) gold?',
+            'Multiply the 24K rate by 0.916 to get the 22K per-gram rate (about &#8377;' . number_format($r22) . ' today), then multiply by the weight. Add making charges and 3% GST. 10 grams of 22K works out to roughly &#8377;' . number_format($r10_22) . ' in metal value alone.');
+        $out[] = array('How much is 10 grams of gold today?',
+            '10 grams of 24K gold is about &#8377;' . number_format($r10_24) . ' and 10 grams of 22K about &#8377;' . number_format($r10_22) . ' in metal value &mdash; before making charges and GST. Use the calculator above for the billed amount with charges.');
+    }
+    $out[] = array('Is GST included in the ' . $ml . ' rate?',
+        'The headline rate is the metal value only. GST of 3% is added on the metal value plus making charges at billing. The calculator on this page shows both the pre-tax and final figure.');
+    $out[] = array('How are ' . $ml . ' making charges calculated?',
+        'Making charges are either a percentage of the metal value (typically 8&ndash;25%, higher for detailed work) or a flat amount per gram. Coins and plain bars have the lowest charges; hand-crafted jewellery the highest. Always ask for the making basis in writing.');
+    $out[] = array('What will I get for my old ' . $ml . ' jewellery?',
+        'A jeweller pays for the metal content only, at today&rsquo;s rate for its actual purity, minus a deduction of roughly 3&ndash;10% for melting and assaying. You do not recover the making charges or GST from the original purchase. Use the old-' . $ml . ' tool above for an estimate.');
+    return $out;
+}
+
+function mp_comm_calc_css() {
+    static $done = false; if ($done) return ''; $done = true;
+    return '<style id="mp-calc-css">
+.mp-calc{font-size:15px;line-height:1.6}
+.mp-calc h2{font-size:19px;margin:26px 0 6px}
+.mp-calc__lead,.mp-calc__note{font-size:13px;color:var(--mp-muted,#64748b);margin:2px 0 10px}
+.mp-calc__bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:14px}
+.mp-calc__metals{display:inline-flex;background:var(--mp-surface2,#f1f5f9);border-radius:10px;padding:3px}
+.mp-calc__metals a{padding:6px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13.5px;color:var(--mp-muted,#64748b)}
+.mp-calc__metals a.on{background:#16a34a;color:#fff}
+.mp-calc__citywrap{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mp-muted,#64748b)}
+.mp-calc__citywrap select{padding:6px 8px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);font-size:13px}
+.mp-calc__rate b{color:#16a34a}
+.mp-calc__main{border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;overflow:hidden}
+.mp-calc__tabs{display:flex;border-bottom:1px solid var(--mp-border,#e2e8f0)}
+.mp-calc__tabs button{flex:1;border:0;background:none;padding:11px;font-size:13.5px;font-weight:600;cursor:pointer;color:var(--mp-muted,#64748b)}
+.mp-calc__tabs button.on{background:#16a34a;color:#fff}
+.mp-calc__grid{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.mp-calc__in{padding:16px;display:flex;flex-direction:column;gap:12px}
+.mp-calc__field{display:flex;flex-direction:column;gap:5px}
+.mp-calc__field[hidden]{display:none!important}
+.mp-calc__field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-calc__field input,.mp-calc__field select{padding:8px 9px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);font-family:inherit}
+.mp-calc__seg{display:inline-flex;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;overflow:hidden;width:fit-content}
+.mp-calc__seg button{border:0;background:none;padding:7px 13px;font-size:13px;cursor:pointer;color:var(--mp-muted,#64748b);font-family:inherit}
+.mp-calc__seg button.on{background:#16a34a;color:#fff}
+.mp-calc__switch{display:flex!important;flex-direction:row!important;align-items:center;gap:7px;font-size:13px!important;text-transform:none!important;letter-spacing:0!important;color:var(--mp-ink,#0f172a)!important}
+.mp-calc__out{background:#0d3b2e;color:#e6f4ee;padding:18px;display:flex;flex-direction:column;align-items:center;text-align:center}
+.mp-calc__out-lbl{font-size:13px;opacity:.85}
+.mp-calc__out-big{font-size:30px;color:#34d399;margin:4px 0 12px;font-variant-numeric:tabular-nums}
+.mp-calc__out-break{width:100%;font-size:13px;display:flex;flex-direction:column;gap:7px}
+.mp-calc__out-break>div{display:flex;justify-content:space-between;gap:10px;border-top:1px solid rgba(255,255,255,.12);padding-top:7px}
+.mp-calc__out-tot{font-weight:700}
+.mp-calc__tool{border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:14px;background:var(--mp-surface,#fff)}
+.mp-calc__tool-in{display:flex;flex-wrap:wrap;gap:12px}
+.mp-calc__tool-in label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b);flex:1;min-width:120px}
+.mp-calc__tool-in input,.mp-calc__tool-in select{padding:8px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);font-family:inherit}
+.mp-calc__verdict{margin-top:12px;font-size:14px}
+.mp-calc__verdict .badge{display:inline-block;padding:3px 11px;border-radius:999px;font-weight:700;font-size:12.5px;margin-bottom:6px}
+.mp-calc__verdict .fair{background:rgba(22,163,74,.15);color:#166534}
+.mp-calc__verdict .high{background:rgba(217,119,6,.16);color:#b45309}
+.mp-calc__verdict .vhigh{background:rgba(220,38,38,.15);color:#b91c1c}
+.mp-calc__formula{background:var(--mp-surface2,#f8fafc);border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;padding:10px 12px;font-size:13.5px}
+@media(max-width:620px){.mp-calc__grid{grid-template-columns:1fr}}
+html[data-theme="dark"] .mp-calc__main,html[data-theme="dark"] .mp-calc__tool,html[data-theme="dark"] .mp-calc__formula{background:#0f172a;border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-calc__metals{background:#1e293b}
+</style>';
+}
+
+function mp_comm_calc_js() {
+    ob_start(); ?>
+(function(){
+  var R = document.currentScript.closest('.mp-calc') || document.querySelector('.mp-calc');
+  if (!R) return;
+  var metal = R.getAttribute('data-metal');
+  var rates = {}, pur = {};
+  try { rates = JSON.parse(R.getAttribute('data-rates')) || {}; } catch(e){}
+  try { pur = JSON.parse(R.getAttribute('data-purities')) || {}; } catch(e){}
+  var base = parseFloat(R.getAttribute('data-base')) || 0;
+  function inr(x){ return '₹' + Math.round(x).toLocaleString('en-IN'); }
+  function num(el){ return el ? (parseFloat(el.value) || 0) : 0; }
+  function q(s){ return R.querySelector('[data-role='+s+']'); }
+  function ratioOf(p){ return (pur[p] && pur[p][1]) || 1; }
+  function citySel(){ var c = q('city'); return c ? c.value : 'India'; }
+  function cityBase(){ return rates[citySel()] || base; }
+
+  /* --- primary calc --- */
+  var mode = 'weight';
+  var seg = q('pty');
+  function activeP(){ var b = seg && seg.querySelector('button.on'); return b ? b.getAttribute('data-p') : Object.keys(pur)[0]; }
+  function perG(){ return cityBase() * ratioOf(activeP()); }
+  function main(){
+    var mk = num(q('mk')), gst = q('gst') && q('gst').checked, pg = perG();
+    var big = q('o-big'), lbl = q('o-lbl');
+    var b1v=q('b1v'), b2v=q('b2v'), b3=q('b3'), b3v=q('b3v'), b4k=q('b4k'), b4v=q('b4v'), b1k=q('b1k'), b4=q('b4k');
+    if (mode === 'weight'){
+      var wt = num(q('wt'));
+      var mv = pg*wt, mc = mv*mk/100, sub = mv+mc, g = gst ? sub*0.03 : 0;
+      lbl.textContent = 'Total amount';
+      big.textContent = inr(sub+g);
+      b1k.textContent='Base value'; b1v.textContent=inr(mv);
+      b2v.textContent=inr(mc);
+      b3.style.display = gst ? '' : 'none'; b3v.textContent=inr(g);
+      b4k.textContent = mp_M()+' weight'; b4v.textContent = wt.toLocaleString('en-IN')+' g';
+    } else {
+      var amt = num(q('amt'));
+      var eff = pg*(1+mk/100)*(gst?1.03:1);
+      var g_ = eff ? amt/eff : 0;
+      var mv2 = g_*pg, mc2 = mv2*mk/100, sub2 = mv2+mc2, gs2 = gst? sub2*0.03 : 0;
+      lbl.textContent = mp_M()+' you can buy';
+      big.textContent = g_.toFixed(4)+' g';
+      b1k.textContent='Amount available'; b1v.textContent=inr(amt);
+      b2v.textContent=inr(mc2);
+      b3.style.display = gst ? '' : 'none'; b3v.textContent=inr(gs2);
+      b4k.textContent = mp_M()+' value'; b4v.textContent = inr(mv2);
+    }
+    rate();
+  }
+  function mp_M(){ return metal.charAt(0).toUpperCase()+metal.slice(1); }
+  function rate(){ var rb=q('rate'), rp=q('ratepur'); if(rb) rb.textContent='₹'+Math.round(cityBase()*ratioOf(activeP())).toLocaleString('en-IN'); if(rp&&pur[activeP()]) rp.textContent=pur[activeP()][0]; }
+
+  R.querySelectorAll('.mp-calc__tabs button').forEach(function(b){
+    b.addEventListener('click', function(){
+      R.querySelectorAll('.mp-calc__tabs button').forEach(function(x){x.classList.remove('on');});
+      b.classList.add('on'); mode = b.getAttribute('data-mode');
+      R.querySelectorAll('[data-when]').forEach(function(f){ f.hidden = f.getAttribute('data-when') !== mode; });
+      main();
+    });
+  });
+  if (seg) seg.addEventListener('click', function(e){ var b=e.target.closest('button'); if(!b) return; seg.querySelectorAll('button').forEach(function(x){x.classList.remove('on');}); b.classList.add('on'); main(); });
+  R.addEventListener('input', function(e){ if (e.target.closest('.mp-calc__main') || e.target.closest('.mp-calc__bar')) main(); tools(); });
+  R.addEventListener('change', function(){ main(); tools(); });
+
+  /* --- unique tools --- */
+  function tools(){
+    var cb = cityBase();
+    // fair price
+    var fo = q('f-out');
+    if (fo){
+      var fw = num(q('f-wt')), fp = q('f-pty').value, fq = num(q('f-q'));
+      var mv = cb*ratioOf(fp)*fw;
+      var lo = mv*1.03*1.05, hi = mv*1.03*1.28;  // GST + making 5-28%
+      if (!fq){ fo.innerHTML=''; }
+      else if (fq <= hi && fq >= lo*0.98){
+        fo.innerHTML = '<span class="badge fair">Looks fair</span><br>Metal value ≈ '+inr(mv)+'. A fair all-in price (GST + normal making) is '+inr(lo)+' – '+inr(hi)+'. Their quote sits inside that range.';
+      } else if (fq < lo*0.98){
+        fo.innerHTML = '<span class="badge fair">Below the fair band</span><br>Their quote is under the '+inr(lo)+' – '+inr(hi)+' range. Double-check the purity and weight on the bill.';
+      } else {
+        var over = fq - hi, pct = mv? (over/mv*100) : 0;
+        fo.innerHTML = '<span class="badge '+(pct>12?'vhigh':'high')+'">'+(pct>12?'Well above':'Above')+' the fair band</span><br>Metal value ≈ '+inr(mv)+'; fair all-in is '+inr(lo)+' – '+inr(hi)+'. You’re being asked for about '+inr(over)+' extra ('+pct.toFixed(0)+'% of the gold value) — usually making charges. Negotiate or compare shops.';
+      }
+    }
+    // old gold
+    var oo = q('o-out');
+    if (oo){
+      var ow = num(q('o-wt')), op = q('o-pty').value, od = num(q('o-ded'));
+      var val = cb*ratioOf(op)*ow*(1-od/100);
+      oo.innerHTML = ow ? ('You should get about <strong>'+inr(val)+'</strong> for '+ow+' g of '+(pur[op]?pur[op][0]:op)+' '+metal+', after a '+od+'% deduction. That is the metal value only — making charges and GST from the original purchase are not refunded.') : '';
+    }
+    // break-even
+    var be = q('be-out');
+    if (be){
+      var bm = num(q('be-mk')), bg = q('be-gst') && q('be-gst').checked;
+      var mult = (1+bm/100)*(bg?1.03:1);
+      var rise = (mult-1)*100;
+      be.innerHTML = 'You pay <strong>'+mult.toFixed(3)+'×</strong> the metal value at purchase. The '+metal+' price must rise about <strong>'+rise.toFixed(1)+'%</strong> before the jewellery is worth what you paid — and even then a buyer deducts a melting charge, so plain coins or bars are better for pure investment.';
+    }
+    // compare
+    var co = q('c-out');
+    if (co){
+      var cw = num(q('c-wt')), cp = q('c-pty').value, cm = num(q('c-mk'));
+      var rows = '<thead><tr><th>City</th><th>Rate/g</th><th>Total (incl. GST)</th></tr></thead><tbody>';
+      Object.keys(rates).forEach(function(city){
+        var pgc = rates[city]*ratioOf(cp);
+        var mv2 = pgc*cw, tot = (mv2 + mv2*cm/100)*1.03;
+        rows += '<tr><td>'+city+'</td><td>₹'+Math.round(pgc).toLocaleString('en-IN')+'</td><td>'+inr(tot)+'</td></tr>';
+      });
+      co.innerHTML = rows + '</tbody>';
+    }
+  }
+
+  // prefill from query string (?mode=amount&amt=10000)
+  try {
+    var p = new URLSearchParams(location.search);
+    if (p.get('mode') === 'amount'){ var ab=R.querySelector('[data-mode=amount]'); if(ab) ab.click(); }
+    if (p.get('amt')){ var ai=q('amt'); if(ai){ ai.value=p.get('amt'); } }
+    if (p.get('wt')){ var wi=q('wt'); if(wi){ wi.value=p.get('wt'); } }
+  } catch(e){}
+
+  main(); tools();
+}());
+<?php
+    return ob_get_clean();
+}
+
+/* ---- SEO for the calculator pages ---- */
+function mp_comm_calc_is_page() { return mp_comm_tool_slug() === 'calculator'; }
+
+add_filter('rank_math/frontend/title', function ($t) {
+    if (!mp_comm_calc_is_page()) return $t;
+    list($m) = mp_comm_ctx();
+    $M = mp_comm_metal_label($m ?: 'gold');
+    return $M . ' Rate Calculator with GST & Making Charges (24K, 22K, 18K) | MoneyPuran';
+}, 11);
+add_filter('rank_math/frontend/description', function ($dd) {
+    if (!mp_comm_calc_is_page()) return $dd;
+    list($m) = mp_comm_ctx();
+    $ml = strtolower(mp_comm_metal_label($m ?: 'gold'));
+    return 'Free ' . $ml . ' rate calculator — enter weight or amount for the exact price with 3% GST and making charges, in any Indian city. Plus tools to check if a jeweller’s price is fair, value old ' . $ml . ', and compare cities.';
+}, 11);
+add_filter('the_title', function ($title, $post_id = 0) {
+    if (is_admin() || !in_the_loop() || !is_main_query() || !mp_comm_calc_is_page()) return $title;
+    list($m) = mp_comm_ctx();
+    if (get_post_field('post_name', $post_id) === mp_comm_hub_slugs()[$m ?: 'gold']) return mp_comm_metal_label($m ?: 'gold') . ' Rate Calculator';
+    return $title;
+}, 11, 2);
+add_filter('rank_math/frontend/canonical', function ($c) {
+    if (!mp_comm_calc_is_page()) return $c;
+    list($m) = mp_comm_ctx();
+    return home_url('/' . mp_comm_hub_slugs()[$m ?: 'gold'] . '/calculator/');
+}, 11);
+add_filter('rank_math/frontend/robots', function ($r) {
+    if (mp_comm_calc_is_page()) { unset($r['noindex']); $r['index'] = 'index'; }
+    return $r;
+}, 11);
+
+add_action('wp_head', function () {
+    if (!mp_comm_calc_is_page()) return;
+    list($m) = mp_comm_ctx();
+    $m = $m ?: 'gold';
+    $M = mp_comm_metal_label($m); $ml = strtolower($M);
+    $hub = mp_comm_hub_slugs()[$m];
+    $url = home_url('/' . $hub . '/calculator/');
+    $d = mp_comm_data($m, '');
+    $g24 = $d ? (($m === 'silver') ? (float) $d['per_g'] : (float) $d['per_g_24k']) : 0;
+
+    $app = array('@context' => 'https://schema.org', '@type' => 'WebApplication',
+        'name' => $M . ' Rate Calculator', 'url' => $url,
+        'applicationCategory' => 'FinanceApplication', 'operatingSystem' => 'Web',
+        'offers' => array('@type' => 'Offer', 'price' => '0', 'priceCurrency' => 'INR'),
+        'description' => 'Calculate the price of ' . $ml . ' by weight or amount with GST and making charges, check if a jeweller price is fair, value old ' . $ml . ', and compare cities.',
+        'publisher' => array('@type' => 'Organization', 'name' => 'MoneyPuran'));
+    $bc = array('@context' => 'https://schema.org', '@type' => 'BreadcrumbList', 'itemListElement' => array(
+        array('@type' => 'ListItem', 'position' => 1, 'name' => 'Home', 'item' => home_url('/')),
+        array('@type' => 'ListItem', 'position' => 2, 'name' => $M . ' Rate', 'item' => home_url('/' . $hub . '/')),
+        array('@type' => 'ListItem', 'position' => 3, 'name' => $M . ' Calculator', 'item' => $url),
+    ));
+    $faq = array('@context' => 'https://schema.org', '@type' => 'FAQPage', 'mainEntity' => array());
+    foreach (mp_comm_calc_faq($m, $g24) as $qa) {
+        $faq['mainEntity'][] = array('@type' => 'Question', 'name' => wp_strip_all_tags($qa[0]),
+            'acceptedAnswer' => array('@type' => 'Answer', 'text' => wp_strip_all_tags($qa[1])));
+    }
+    foreach (array($app, $bc, $faq) as $node) {
+        echo "\n<script type=\"application/ld+json\">" . wp_json_encode($node, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+    }
+}, 3);
