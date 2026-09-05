@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.32.1
+ * Version: 1.32.2
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -9035,8 +9035,10 @@ function mp_comm_calc_is_page() { return mp_comm_tool_slug() === 'calculator'; }
 
 function mp_comm_calc_title() {
     list($m) = mp_comm_ctx();
-    $M = mp_comm_metal_label($m ?: 'gold');
-    return $M . ' Rate Calculator with GST & Making Charges (24K, 22K, 18K) | MoneyPuran';
+    $m = $m ?: 'gold';
+    $M = mp_comm_metal_label($m);
+    $pur = ($m === 'gold') ? '24K, 22K, 18K' : (($m === 'platinum') ? 'PT999 & PT950' : '999 Fine');
+    return $M . ' Rate Calculator with GST & Making Charges (' . $pur . ') | MoneyPuran';
 }
 add_filter('rank_math/frontend/title', function ($t) {
     return mp_comm_calc_is_page() ? mp_comm_calc_title() : $t;
