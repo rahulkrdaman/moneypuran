@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.26.0
+ * Version: 1.27.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -1103,8 +1103,8 @@ function mp_md_evergreen_page_ids() {
     $ids = get_transient('mp_md_evergreen_ids');
     if (is_array($ids)) return $ids;
     $slugs = array(
-        'stock-analysis', 'gold-rates', 'fuel-prices', 'commodities', 'charts', 'fii-dii-data',
-        'why-market-moved-today', 'india-market-today', 'nifty-50', 'sensex', 'bank-nifty',
+        'stock-analysis', 'gold-rate', 'silver-rate', 'gold-rates', 'fuel-prices', 'commodities', 'charts', 'fii-dii-data',
+        'why-market-moved-today', 'markets/why-market-moved-today', 'markets', 'india-market-today', 'nifty-50', 'sensex', 'bank-nifty',
         'stocks', 'sector', 'top-gainers-today', 'top-losers-today',
         '52-week-high-stocks', '52-week-low-stocks',
     );
@@ -1161,15 +1161,15 @@ function mp_md_quick_tools() {
     return apply_filters('mp_quick_tools', array(
         'Stock Analysis'    => '/stock-analysis/',
         'US Markets'        => '/us-markets/',
-        'Gold Rate Today'   => '/gold-rates/',
-        'Silver Rate Today' => '/silver-rate-today/',
+        'Gold Rate Today'   => '/gold-rate/',
+        'Silver Rate Today' => '/silver-rate/',
         'Fuel Prices'       => '/fuel-prices/',
         'Commodities'       => '/commodities/',
         'Live Charts'       => '/charts/',
         'FII / DII'         => '/fii-dii-data/',
         'Nifty 50'          => '/nifty-50/',
         'Top Gainers'       => '/top-gainers-today/',
-        'Why Market Moved'  => '/why-market-moved-today/',
+        'Why Market Moved'  => '/markets/why-market-moved-today/',
     ));
 }
 add_shortcode('mp_hero_slider', function ($atts) {
@@ -4155,6 +4155,8 @@ add_shortcode('mp_why_market', function () {
     ?>
   </p>
 
+  <?php echo mp_wmm_takeaways_html(); ?>
+
   <h2>What&rsquo;s driving the move</h2>
   <p>
     <?php if ($up3 || $dn3) : ?>
@@ -7050,3 +7052,333 @@ html[data-theme="dark"] .mp-comm__cities a.on{background:#e2e8f0;color:#0f172a}
 </style>
     <?php
 }, 20);
+
+
+/* ============================================================================
+ * WHY MARKET MOVED TODAY - live engine  (v1.27.0)  [Task 2 + NewsArticle schema]
+ *   - Top-5 "reasons" key-takeaways block prepended to [mp_why_market]:
+ *     global cues / FII-DII flows / sector drags / currency / technical levels.
+ *   - Visible datePublished + dateModified (ISO) and NewsArticle JSON-LD with a
+ *     Person author + editor.
+ *   - Canonical hub at /markets/why-market-moved-today/ ; the old flat URL 301s.
+ *   - 14-day on-page archive of daily snapshots + links to the newsroom's
+ *     dated daily recaps.
+ * ==========================================================================*/
+
+function mp_wmm_slug() { return 'why-market-moved-today'; }
+function mp_wmm_is_hub() {
+    $obj = get_queried_object();
+    return ($obj instanceof WP_Post) && $obj->post_name === mp_wmm_slug() && $obj->post_type === 'page';
+}
+
+/* Nifty daily pivot levels from the last completed 1D bar. */
+function mp_wmm_pivots() {
+    $o = mp_candle_ohlc('nifty', '1D');
+    $bars = is_array($o) && !empty($o['bars']) ? $o['bars'] : array();
+    if (count($bars) < 2) return null;
+    $prev = $bars[count($bars) - 2];           // yesterday bar: ts, O, H, L, C, V
+    $last = $bars[count($bars) - 1];
+    $H = (float) $prev[2]; $L = (float) $prev[3]; $C = (float) $prev[4];
+    $P  = ($H + $L + $C) / 3;
+    $R1 = 2 * $P - $L;  $S1 = 2 * $P - $H;
+    $R2 = $P + ($H - $L); $S2 = $P - ($H - $L);
+    return array(
+        'price' => round((float) $last[4], 2),
+        'P' => round($P), 'R1' => round($R1), 'R2' => round($R2),
+        'S1' => round($S1), 'S2' => round($S2),
+    );
+}
+
+/* Ordered list of drivers. Each: ['t' => heading, 'd' => detail sentence]. */
+function mp_wmm_reasons() {
+    $d   = mp_md_get_screener();
+    $scn = $d['scenario'] ?? null;
+    if (!$scn) return array();
+    $nc  = $scn['niftyChg'];
+    $out = array();
+
+    // 1. Global cues
+    $g = $scn['global'] ?? array();
+    $gl = array();
+    if (!empty($scn['usLine'])) $gl[] = $scn['usLine'];
+    if (!empty($g['crude'])) $gl[] = ($g['crude']['name'] ?? 'crude') . ' crude ' . ($scn['crudeLine'] ?? '');
+    if (!empty($g['gold']) && $g['gold']['chg'] !== null) $gl[] = 'gold ' . ($g['gold']['chg'] >= 0 ? 'up ' : 'down ') . abs($g['gold']['chg']) . '% overnight';
+    if ($gl) $out[] = array(
+        't' => 'Global cues',
+        'd' => ucfirst(implode('; ', $gl)) . '. Overnight moves on Wall Street and in crude oil, plus US Federal Reserve rate expectations, set the tone for how India opens.',
+    );
+
+    // 2. FII / DII flows
+    $fd = function_exists('mp_md_fii_dii') ? mp_md_fii_dii() : array();
+    if (!empty($fd['rows'])) {
+        $bits = array();
+        foreach ($fd['rows'] as $r) {
+            $cat = $r['category'] ?? '';
+            $net = $r['netValue'] ?? ($r['net'] ?? null);
+            if (!is_numeric($net) || $cat === '') continue;
+            $bits[] = $cat . ' were net ' . ($net >= 0 ? 'buyers' : 'sellers') . ' of &#8377;' . number_format(abs($net), 0) . ' cr';
+        }
+        if ($bits) $out[] = array('t' => 'FII / DII flows', 'd' => ucfirst(implode('; ', $bits)) . ' in the cash market. Sustained foreign selling tends to pressure the index and the rupee; domestic funds often absorb it.');
+    } else {
+        $out[] = array('t' => 'FII / DII flows', 'd' => 'Provisional foreign (FII) and domestic (DII) institutional flow figures for today are published by the exchanges after the close &mdash; check the <a href="' . esc_url(home_url('/fii-dii-data/')) . '">FII/DII page</a> this evening. Institutional flows are one of the biggest short-term swing factors for the Nifty.');
+    }
+
+    // 3. Sector drags / leaders
+    $leaders = $d['leaders'] ?? array();
+    if ($leaders) {
+        $up = array_slice($leaders, 0, 3, true);
+        $dn = array_slice(array_reverse($leaders, true), 0, 3, true);
+        $upT = array(); foreach ($up as $s => $c) $upT[] = $s . ' (' . ($c >= 0 ? '+' : '') . $c . '%)';
+        $dnT = array(); foreach ($dn as $s => $c) $dnT[] = $s . ' (' . ($c >= 0 ? '+' : '') . $c . '%)';
+        $out[] = array(
+            't' => 'Sector moves',
+            'd' => 'Leading: ' . implode(', ', $upT) . '. Lagging: ' . implode(', ', $dnT) . '. Because IT, banking and Reliance carry the largest index weights, a sharp move in any one of them can drive the whole Nifty.',
+        );
+    }
+
+    // 4. Currency
+    if (!empty($scn['inrLine'])) {
+        $inrChg = $scn['global']['usdinr']['chg'] ?? null;
+        $impact = ($inrChg === null) ? '' : ($inrChg > 0
+            ? ' A weaker rupee lifts exporters such as IT and pharma but raises the import bill for oil and electronics.'
+            : ' A stronger rupee eases the import bill and is generally supportive of domestic-facing sectors.');
+        $out[] = array('t' => 'Rupee (USD/INR)', 'd' => 'The rupee ' . $scn['inrLine'] . '.' . $impact);
+    }
+
+    // 5. Technical levels
+    $pv = mp_wmm_pivots();
+    if ($pv) {
+        $pos = $pv['price'] >= $pv['P'] ? 'above' : 'below';
+        $out[] = array(
+            't' => 'Technical levels',
+            'd' => 'Nifty is trading ' . $pos . ' its daily pivot of ' . number_format($pv['P']) . '. Immediate support is around ' . number_format($pv['S1']) . ' (then ' . number_format($pv['S2']) . '); resistance is near ' . number_format($pv['R1']) . ' (then ' . number_format($pv['R2']) . '). A decisive break of these levels often accelerates the move.',
+        );
+    }
+
+    return array_slice($out, 0, 5);
+}
+
+/* Headline direction word for the takeaways H2. */
+function mp_wmm_dir_words($nc) {
+    if ($nc === null) return array('moved', 'is moving');
+    if ($nc <= -0.15) return array('fell', 'fell');
+    if ($nc >= 0.15) return array('rose', 'rose');
+    return array('were flat', 'were little changed');
+}
+
+/* The takeaways block - prepended inside [mp_why_market]. */
+function mp_wmm_takeaways_html() {
+    $reasons = mp_wmm_reasons();
+    if (!$reasons) return '';
+    $d   = mp_md_get_screener();
+    $nc  = $d['scenario']['niftyChg'] ?? null;
+    list($past) = mp_wmm_dir_words($nc);
+    $n = count($reasons);
+    // datePublished = today's session open (09:15 IST); dateModified = now.
+    $openIso = gmdate('Y-m-d', time() + 19800) . 'T09:15:00+05:30';
+    $nowIso  = gmdate('Y-m-d\TH:i:s', time() + 19800) . '+05:30';
+    $nowHm   = gmdate('H:i', time() + 19800);
+
+    ob_start(); ?>
+<div class="mp-why__takeaways">
+  <h2>Top <?php echo (int) $n; ?> reasons why Sensex &amp; Nifty <?php echo esc_html($past); ?> today</h2>
+  <ol class="mp-why__reasons">
+    <?php foreach ($reasons as $r) : ?>
+      <li><strong><?php echo esc_html($r['t']); ?>.</strong> <?php echo wp_kses_post($r['d']); ?></li>
+    <?php endforeach; ?>
+  </ol>
+  <p class="mp-why__ts">
+    Published <time datetime="<?php echo esc_attr($openIso); ?>"><?php echo esc_html(gmdate('j M Y', time() + 19800)); ?>, 09:15 IST</time>
+    &middot; Updated <time datetime="<?php echo esc_attr($nowIso); ?>" data-live-datetime="time"><?php echo esc_html($nowHm); ?></time> IST
+    &middot; refreshed live through the trading day
+  </p>
+</div>
+    <?php
+    return ob_get_clean();
+}
+
+/* NewsArticle JSON-LD + SEBI note for the hub page. */
+add_action('wp_head', function () {
+    if (!mp_wmm_is_hub()) return;
+    $page = get_queried_object();
+    $author = get_user_by('slug', 'diksha-kumari');
+    $editor = get_user_by('slug', 'dipu');
+    $nowIso = gmdate('c');
+    $pub = get_post_time('c', true, $page) ?: $nowIso;
+    $img = '';
+    if (has_post_thumbnail($page)) $img = get_the_post_thumbnail_url($page, 'full');
+    if (!$img && function_exists('get_site_icon_url')) $img = get_site_icon_url(512);
+
+    $node = array(
+        '@context' => 'https://schema.org',
+        '@type'    => 'NewsArticle',
+        'headline' => 'Why is the stock market up or down today? Sensex & Nifty live',
+        'description' => 'Live explainer of why the Sensex and Nifty are moving today - global cues, FII/DII flows, sector moves, the rupee and technical levels, updated through the trading session.',
+        'mainEntityOfPage' => array('@type' => 'WebPage', '@id' => get_permalink($page)),
+        'url' => get_permalink($page),
+        'datePublished' => $pub,
+        'dateModified'  => $nowIso,
+        'articleSection' => 'Markets',
+        'isAccessibleForFree' => true,
+        'publisher' => array(
+            '@type' => 'Organization', 'name' => 'MoneyPuran', 'url' => home_url('/'),
+        ),
+    );
+    if ($img) {
+        $node['image'] = array('@type' => 'ImageObject', 'url' => $img);
+        $node['publisher']['logo'] = array('@type' => 'ImageObject', 'url' => $img);
+    }
+    if ($author) {
+        $node['author'] = array('@type' => 'Person', 'name' => $author->display_name,
+            'url' => get_author_posts_url($author->ID),
+            'jobTitle' => get_user_meta($author->ID, 'mp_job_title', true) ?: 'Markets Writer',
+            'worksFor' => array('@type' => 'Organization', 'name' => 'MoneyPuran'));
+    } else {
+        $node['author'] = array('@type' => 'Organization', 'name' => 'MoneyPuran');
+    }
+    if ($editor) {
+        $node['editor'] = array('@type' => 'Person', 'name' => $editor->display_name,
+            'url' => get_author_posts_url($editor->ID));
+    }
+    echo "\n<script type=\"application/ld+json\">" . wp_json_encode($node, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+}, 4);
+
+/* Keep dateModified honest: touch the hub page's post_modified at most every 20 min. */
+add_action('mp_md_cron_screener', function () {
+    $p = get_page_by_path('markets/' . mp_wmm_slug()) ?: get_page_by_path(mp_wmm_slug());
+    if (!$p) return;
+    if ((time() - get_post_modified_time('U', true, $p)) < 1200) return;
+    global $wpdb;
+    $now = current_time('mysql'); $gmt = current_time('mysql', true);
+    $wpdb->update($wpdb->posts, array('post_modified' => $now, 'post_modified_gmt' => $gmt), array('ID' => $p->ID));
+    clean_post_cache($p->ID);
+}, 30);
+
+/* ---- 14-day snapshot archive ---------------------------------------- */
+add_action('mp_md_daily_touch', function () {
+    // Runs once/day - store a compact snapshot of today's drivers.
+    $reasons = mp_wmm_reasons();
+    if (!$reasons) return;
+    $d = mp_md_get_screener();
+    $scn = $d['scenario'] ?? array();
+    $arc = get_option('mp_wmm_archive', array());
+    if (!is_array($arc)) $arc = array();
+    $key = gmdate('Y-m-d', time() + 19800);
+    $arc[$key] = array(
+        'date'   => gmdate('j M Y', time() + 19800),
+        'nifty'  => isset($scn['nifty']['level']) ? round($scn['nifty']['level']) : null,
+        'niftyChg' => $scn['niftyChg'] ?? null,
+        'sensex' => isset($scn['sensex']['level']) ? round($scn['sensex']['level']) : null,
+        'reasons' => array_map(function ($r) { return array('t' => $r['t'], 'd' => wp_strip_all_tags($r['d'])); }, $reasons),
+    );
+    krsort($arc);
+    $arc = array_slice($arc, 0, 14, true);
+    update_option('mp_wmm_archive', $arc, false);
+}, 20);
+
+add_shortcode('mp_why_market_archive', function () {
+    $arc = get_option('mp_wmm_archive', array());
+    $recaps = get_posts(array('numberposts' => 6, 'post_status' => 'publish', 'orderby' => 'date', 'order' => 'DESC',
+        'category_name' => 'indian-markets'));
+    if (empty($arc) && empty($recaps)) return '';
+    ob_start(); ?>
+<div class="mp-why__arc">
+  <h2>Recent daily market summaries</h2>
+  <?php if (!empty($recaps)) : ?>
+  <ul class="mp-why__news">
+    <?php foreach ($recaps as $p) : ?>
+      <li><a href="<?php echo esc_url(get_permalink($p)); ?>"><?php echo esc_html(get_the_title($p)); ?></a>
+        <span><?php echo esc_html(get_the_date('j M Y', $p)); ?></span></li>
+    <?php endforeach; ?>
+  </ul>
+  <?php endif; ?>
+  <?php if (!empty($arc)) : ?>
+  <div class="mp-why__faq">
+    <?php foreach ($arc as $day) : $c = $day['niftyChg']; ?>
+      <details>
+        <summary><?php echo esc_html($day['date']); ?>
+          <?php if ($day['nifty']) : ?>&mdash; Nifty <?php echo number_format($day['nifty']); ?><?php echo $c !== null ? ' (' . ($c >= 0 ? '+' : '') . $c . '%)' : ''; ?><?php endif; ?>
+        </summary>
+        <ol>
+          <?php foreach ($day['reasons'] as $r) : ?><li><strong><?php echo esc_html($r['t']); ?>.</strong> <?php echo esc_html($r['d']); ?></li><?php endforeach; ?>
+        </ol>
+      </details>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+</div>
+    <?php
+    return ob_get_clean();
+});
+
+/* ---- page location: /markets/why-market-moved-today/ --------------- */
+add_action('init', function () {
+    if (get_option('mp_wmm_move_v') === '1') return;
+    if (wp_doing_ajax() || wp_doing_cron() || (defined('REST_REQUEST') && REST_REQUEST)) return;
+
+    // 1. ensure a /markets/ hub page
+    $mk = get_page_by_path('markets');
+    if (!$mk) {
+        $mkId = wp_insert_post(array(
+            'post_type' => 'page', 'post_status' => 'publish', 'post_name' => 'markets',
+            'post_title' => 'Markets - Sensex, Nifty & Live Analysis',
+            'post_content' => "<p>Live coverage of the Indian and global markets - why the Sensex and Nifty are moving, sector performance, institutional flows and the day's key levels.</p>\n[mp_markets_dashboard]\n<h2>Market tools</h2>\n<ul><li><a href=\"/markets/why-market-moved-today/\">Why the market moved today</a></li><li><a href=\"/nifty-50/\">Nifty 50</a></li><li><a href=\"/sensex/\">Sensex</a></li><li><a href=\"/fii-dii-data/\">FII / DII activity</a></li><li><a href=\"/stock-analysis/\">Stock analysis by sector</a></li></ul>",
+        ));
+    } else {
+        $mkId = $mk->ID;
+    }
+
+    // 2. reparent the why-market page (keep slug)
+    $wm = get_page_by_path('markets/' . mp_wmm_slug()) ?: get_page_by_path(mp_wmm_slug());
+    if ($wm && $mkId && !is_wp_error($mkId) && (int) $wm->post_parent !== (int) $mkId) {
+        wp_update_post(array('ID' => $wm->ID, 'post_parent' => (int) $mkId));
+    }
+    if ($wm) {
+        $has = strpos((string) $wm->post_content, 'mp_why_market_archive') !== false;
+        if (!$has) {
+            wp_update_post(array('ID' => $wm->ID, 'post_content' => $wm->post_content . "\n[mp_why_market_archive]"));
+        }
+        // byline: Diksha (author), reviewed by Dipu
+        $dk = get_user_by('slug', 'diksha-kumari');
+        if ($dk && (int) $wm->post_author !== (int) $dk->ID) wp_update_post(array('ID' => $wm->ID, 'post_author' => (int) $dk->ID));
+    }
+    update_option('mp_wmm_move_v', '1');
+    flush_rewrite_rules(false);
+}, 31);
+
+/* 301: /why-market-moved-today/ -> /markets/why-market-moved-today/ */
+add_action('template_redirect', function () {
+    $path = trim((string) parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH), '/');
+    if ($path === mp_wmm_slug()) {
+        wp_safe_redirect(home_url('/markets/' . mp_wmm_slug() . '/'), 301);
+        exit;
+    }
+}, 1);
+
+/* Rank Math title/description for the hub. */
+add_filter('rank_math/frontend/title', function ($t) {
+    return mp_wmm_is_hub() ? 'Why Is the Stock Market Up or Down Today? Sensex & Nifty Live | MoneyPuran' : $t;
+});
+add_filter('rank_math/frontend/description', function ($d) {
+    return mp_wmm_is_hub()
+        ? 'Why are the Sensex and Nifty up or down today? The top reasons - global cues, FII/DII flows, sector moves, the rupee and technical levels - updated live through the trading session.'
+        : $d;
+});
+
+/* ---- styles for the takeaways / archive ----------------------------- */
+add_action('wp_head', function () {
+    if (!mp_wmm_is_hub()) return;
+    ?>
+<style id="mp-wmm-css">
+.mp-why__takeaways{border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:16px 18px;margin:14px 0 18px;background:var(--mp-surface2,#f8fafc)}
+.mp-why__takeaways h2{margin:0 0 10px;font-size:19px}
+.mp-why__reasons{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:9px;font-size:14.5px;line-height:1.6}
+.mp-why__reasons li strong{color:var(--mp-ink,#0f172a)}
+.mp-why__ts{margin:12px 0 0;font-size:12px;color:var(--mp-muted,#64748b)}
+.mp-why__arc{margin-top:26px}
+.mp-why__arc h2{font-size:19px;margin:0 0 10px}
+html[data-theme="dark"] .mp-why__takeaways{background:#111827;border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-why__reasons li strong{color:#f1f5f9}
+</style>
+    <?php
+}, 8);
