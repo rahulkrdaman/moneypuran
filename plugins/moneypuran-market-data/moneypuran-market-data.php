@@ -6524,16 +6524,25 @@ function mp_comm_data_build($metal, $citySlug = '') {
         );
     }
 
-    // Day high/low + ₹ change from today's OHLC bar.
-    $o = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '1D');
-    $bars = is_array($o) && !empty($o['bars']) ? $o['bars'] : array();
-    if ($bars) {
-        $last = end($bars);
-        $prevBar = count($bars) > 1 ? $bars[count($bars) - 2] : null;
-        $data['day_high'] = (float) $last[2];
-        $data['day_low']  = (float) $last[3];
-        $data['day_chg_abs'] = $prevBar ? round($last[4] - $prevBar[4]) : null;
+    // Session high/low from today's intraday (15m) bars, in IST.
+    $intra = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '15m');
+    $ib = is_array($intra) && !empty($intra['bars']) ? $intra['bars'] : array();
+    $today = gmdate('Y-m-d', time() + 19800);
+    $hi = $lo = null;
+    foreach ($ib as $bar) {
+        if (gmdate('Y-m-d', (int) $bar[0] + 19800) !== $today) continue;
+        if ($bar[2] !== null) $hi = ($hi === null) ? (float) $bar[2] : max($hi, (float) $bar[2]);
+        if ($bar[3] !== null) $lo = ($lo === null) ? (float) $bar[3] : min($lo, (float) $bar[3]);
+    }
+    if ($hi !== null && $lo !== null && $hi > $lo) {
+        $data['day_high'] = $hi;
+        $data['day_low']  = $lo;
         $data['ref_unit'] = ($metal === 'silver') ? 'per kg' : 'per 10 g (24K)';
+    }
+    $daily = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '1D');
+    $db = is_array($daily) && !empty($daily['bars']) ? $daily['bars'] : array();
+    if (count($db) > 1) {
+        $data['day_chg_abs'] = round($db[count($db) - 1][4] - $db[count($db) - 2][4]);
     }
     $data['history'] = mp_comm_history($metal, 10);
     $data['cityNote'] = ($citySlug && isset($cities[$citySlug])) ? $cities[$citySlug][2] : '';
@@ -6644,13 +6653,13 @@ add_shortcode('mp_commodity_page', function ($atts) {
   <h2>10-day <?php echo esc_html(strtolower($M)); ?> price trend<?php echo $cityDisplay ? ' &mdash; ' . esc_html($cityDisplay) : ''; ?></h2>
   <div class="mp-comm__tablewrap">
   <table class="mp-comm__table mp-comm__hist">
-    <thead><tr><th>Date</th><th><?php echo $metal === 'silver' ? '999 / kg' : '24K / 10 g'; ?></th><th>Change</th></tr></thead>
+    <thead><tr><th>Date</th><th><?php echo $metal === 'silver' ? '999 close / kg' : '24K close / 10 g'; ?></th><th>Change</th></tr></thead>
     <tbody>
       <?php foreach (array_reverse($d['history']) as $h) : $dd = $h['delta']; ?>
         <tr>
           <td><?php echo esc_html($h['date']); ?></td>
           <td>&#8377;<?php echo number_format($h['close']); ?></td>
-          <td class="<?php echo $dd === null ? '' : ($dd > 0 ? 'up' : ($dd < 0 ? 'dn' : '')); ?>"><?php echo $dd === null ? '&mdash;' : (($dd > 0 ? '+' : '') . '&#8377;' . number_format($dd)); ?></td>
+          <td class="<?php echo $dd === null ? '' : ($dd > 0 ? 'up' : ($dd < 0 ? 'dn' : '')); ?>"><?php echo $dd === null ? '&mdash;' : (($dd > 0 ? '+&#8377;' : '&minus;&#8377;') . number_format(abs($dd))); ?></td>
         </tr>
       <?php endforeach; ?>
     </tbody>
@@ -6684,7 +6693,7 @@ add_shortcode('mp_commodity_page', function ($atts) {
   </div>
 
   <?php /* city context */ ?>
-  <h2><?php echo esc_html($M); ?> rate in <?php echo esc_html($whereLabel); ?> &mdash; local context</h2>
+  <h2><?php echo $citySlug ? esc_html($M) . ' rate in ' . esc_html($whereLabel) . ' &mdash; local context' : 'How the ' . esc_html(strtolower($M)) . ' rate in India is set'; ?></h2>
   <?php if ($citySlug && !empty($d['cityNote'])) : ?>
     <p><?php echo wp_kses_post($d['cityNote']); ?></p>
     <p>GST on <?php echo esc_html(strtolower($M)); ?> is a uniform <strong>3%</strong> across <?php echo esc_html($d['cityState']); ?> and the rest of India, so the price you pay in <?php echo esc_html($cityDisplay); ?> differs from other cities only by local jeweller premiums, transport from bullion hubs and making-charge conventions &mdash; usually a fraction of a percent on the metal value.</p>
@@ -6931,24 +6940,27 @@ add_action('init', function () {
     update_option('mp_comm_pages_v', '1');
 }, 30);
 
-/* ---- /commodities-sitemap.xml --------------------------------------- */
-add_action('init', function () {
-    add_rewrite_rule('^commodities-sitemap\.xml$', 'index.php?mp_comm_sitemap=1', 'top');
-});
-add_filter('query_vars', function ($v) { $v[] = 'mp_comm_sitemap'; return $v; });
-add_action('template_redirect', function () {
-    if (!get_query_var('mp_comm_sitemap')) return;
-    header('Content-Type: application/xml; charset=UTF-8');
-    $urls = mp_comm_all_urls();
+/* ---- /commodities-sitemap.xml --------------------------------------- *
+ * parse_request (prio 0) so an SEO plugin's *sitemap*.xml catch-all
+ * rule can't 404 it. No rewrite rule / flush needed.                  */
+add_action('parse_request', function () {
+    $path = isset($_SERVER['REQUEST_URI'])
+        ? trim((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/') : '';
+    if ($path !== 'commodities-sitemap.xml') return;
+    if (!headers_sent()) {
+        status_header(200);
+        header('Content-Type: application/xml; charset=UTF-8', true);
+        header('X-Robots-Tag: noindex', true);
+    }
+    $now = gmdate('c');
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
-    $now = gmdate('c');
-    foreach ($urls as $u) {
-        echo "  <url><loc>" . esc_url($u) . "</loc><lastmod>" . $now . "</lastmod><changefreq>hourly</changefreq><priority>0.8</priority></url>\n";
+    foreach (mp_comm_all_urls() as $u) {
+        echo '  <url><loc>' . esc_url($u) . '</loc><lastmod>' . $now . '</lastmod><changefreq>hourly</changefreq><priority>0.8</priority></url>' . "\n";
     }
     echo '</urlset>';
     exit;
-}, 1);
+}, 0);
 add_filter('robots_txt', function ($out) {
     if (strpos($out, 'commodities-sitemap.xml') === false) {
         $out .= "\nSitemap: " . home_url('/commodities-sitemap.xml') . "\n";
