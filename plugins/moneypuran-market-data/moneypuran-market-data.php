@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.32.2
+ * Version: 1.33.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -9098,3 +9098,677 @@ add_action('wp_head', function () {
         echo "\n<script type=\"application/ld+json\">" . wp_json_encode($node, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
     }
 }, 3);
+
+
+/* ============================================================================
+ * CALCULATOR SUITE  (v1.33.0)  [Module 3]
+ *   /calculators/                         hub
+ *   /calculators/<slug>/                  global calculators
+ *   /calculators/<india|usa|uae>/<slug>/  country calculators
+ *
+ *   Pure-maths tools - no external data. Server-rendered formula, worked
+ *   example, quick-reference table and FAQ (with FAQPage + WebApplication
+ *   JSON-LD). The interactive widget is progressive-enhancement JS.
+ * ==========================================================================*/
+
+function mp_calc_registry() {
+    static $memo = null;
+    if ($memo !== null) return $memo;
+    $memo = apply_filters('mp_calc_registry', array(
+
+    /* ---------------- GLOBAL ---------------- */
+    'compound-interest' => array(
+        'cat' => '', 'title' => 'Compound Interest Calculator', 'sym' => 'INR',
+        'blurb' => 'See how a lump sum grows with compound interest, and how much the compounding frequency matters.',
+        'inputs' => array(
+            array('p', 'Principal amount', 'money', 100000),
+            array('r', 'Annual interest rate (%)', 'pct', 8),
+            array('y', 'Time period (years)', 'num', 10),
+            array('f', 'Compounding frequency', 'sel', 'monthly', array('annually' => 'Annually', 'quarterly' => 'Quarterly', 'monthly' => 'Monthly', 'daily' => 'Daily')),
+            array('c', 'Extra monthly contribution', 'money', 0),
+        ),
+        'formula' => 'A = P (1 + r/n)<sup>n·t</sup> &nbsp; where n = compounding periods per year',
+        'example' => 'Rs 1,00,000 at 8% for 10 years, compounded monthly: A = 100000 &times; (1 + 0.08/12)<sup>120</sup> &approx; <strong>Rs 2,21,964</strong>. Compounded annually it would be only Rs 2,15,892 - the monthly compounding adds about Rs 6,000.',
+        'ref' => array('head' => array('Rate', '5 yr', '10 yr', '20 yr'), 'note' => 'Growth of Rs 1,00,000, compounded monthly.',
+            'rows' => array(array('6%', '1.35 L', '1.82 L', '3.31 L'), array('8%', '1.49 L', '2.22 L', '4.93 L'), array('10%', '1.65 L', '2.71 L', '7.33 L'), array('12%', '1.82 L', '3.30 L', '10.89 L'))),
+        'faq' => array(
+            array('What is compound interest?', 'Compound interest is interest calculated on both the original principal and the interest already added. Because each period&rsquo;s interest earns interest of its own, the balance grows faster over time than with simple interest.'),
+            array('Does compounding frequency really matter?', 'Yes, but less than people expect. Moving from annual to monthly compounding at 8% over 10 years adds roughly 3% to the final amount. Moving from monthly to daily adds only a fraction of a percent.'),
+            array('What is the rule of 72?', 'Divide 72 by the annual return to estimate how many years it takes money to double. At 8%, that is 72 &divide; 8 = 9 years.'),
+        ),
+    ),
+    'loan-emi' => array(
+        'cat' => '', 'title' => 'Loan EMI Calculator', 'sym' => 'INR',
+        'blurb' => 'Calculate the monthly instalment, total interest and a year-by-year payoff schedule for any loan.',
+        'inputs' => array(
+            array('p', 'Loan amount', 'money', 2500000),
+            array('r', 'Interest rate (% per year)', 'pct', 9),
+            array('y', 'Loan tenure (years)', 'num', 20),
+        ),
+        'formula' => 'EMI = P &times; r &times; (1+r)<sup>n</sup> / [(1+r)<sup>n</sup> &minus; 1] &nbsp; where r = monthly rate, n = number of months',
+        'example' => 'A Rs 25,00,000 loan at 9% for 20 years (240 months, monthly rate 0.75%): EMI &approx; <strong>Rs 22,493</strong>. Total paid = Rs 53,98,320, of which Rs 28,98,320 is interest.',
+        'ref' => array('head' => array('Loan', '10 yr @ 9%', '20 yr @ 9%', '30 yr @ 9%'), 'note' => 'Approximate monthly EMI.',
+            'rows' => array(array('Rs 20 L', '25,335', '17,995', '16,092'), array('Rs 50 L', '63,338', '44,986', '40,231'), array('Rs 1 Cr', '1,26,676', '89,973', '80,462'))),
+        'faq' => array(
+            array('How is EMI calculated?', 'EMI uses the reducing-balance formula: EMI = P &times; r &times; (1+r)<sup>n</sup> / ((1+r)<sup>n</sup> &minus; 1), where P is the principal, r is the monthly interest rate (annual rate &divide; 12 &divide; 100) and n is the number of monthly instalments.'),
+            array('Why is so much of my early EMI interest?', 'Interest is charged on the outstanding balance, which is highest at the start. In the first year of a 20-year home loan, roughly 80% of each EMI is interest and only 20% repays principal. The ratio flips over the life of the loan.'),
+            array('Does prepaying a loan save money?', 'Yes. A prepayment goes entirely to principal, cutting the balance on which future interest is charged. Prepaying early in the tenure saves far more interest than prepaying near the end.'),
+        ),
+    ),
+    'mortgage-calculator' => array(
+        'cat' => '', 'title' => 'Mortgage Calculator', 'sym' => 'USD',
+        'blurb' => 'Estimate the principal-and-interest payment on a home loan and the total cost over the term.',
+        'inputs' => array(
+            array('p', 'Home price', 'money', 400000),
+            array('d', 'Down payment', 'money', 80000),
+            array('r', 'Interest rate (%)', 'pct', 6.5),
+            array('y', 'Loan term (years)', 'num', 30),
+        ),
+        'formula' => 'Payment = L &times; r(1+r)<sup>n</sup> / [(1+r)<sup>n</sup> &minus; 1] &nbsp; where L = price &minus; down payment',
+        'example' => 'A $400,000 home with $80,000 down (loan $320,000) at 6.5% for 30 years: principal &amp; interest &approx; <strong>$2,023/month</strong>. Over 30 years you pay about $728,000, of which $408,000 is interest.',
+        'ref' => array('head' => array('Loan', '15 yr @ 6.5%', '30 yr @ 6.5%'), 'note' => 'Principal &amp; interest only.',
+            'rows' => array(array('$200,000', '$1,742', '$1,264'), array('$300,000', '$2,613', '$1,896'), array('$500,000', '$4,355', '$3,160'))),
+        'faq' => array(
+            array('What is included in a mortgage payment?', 'A mortgage payment usually has four parts (PITI): principal, interest, property taxes and homeowners insurance - plus private mortgage insurance (PMI) if the down payment is under 20%. This calculator shows principal and interest; use the US PITI calculator for the full figure.'),
+            array('How much house can I afford?', 'A common guideline is that total housing costs stay under 28% of gross monthly income and all debt under 36%. Lenders also look at your credit score, down payment and reserves.'),
+        ),
+    ),
+    'cagr-calculator' => array(
+        'cat' => '', 'title' => 'CAGR Calculator', 'sym' => 'INR',
+        'blurb' => 'Work out the compound annual growth rate (CAGR) of any investment between two dates.',
+        'inputs' => array(
+            array('b', 'Initial value', 'money', 100000),
+            array('e', 'Final value', 'money', 250000),
+            array('y', 'Number of years', 'num', 7),
+        ),
+        'formula' => 'CAGR = (Final / Initial)<sup>1/years</sup> &minus; 1',
+        'example' => 'An investment that grew from Rs 1,00,000 to Rs 2,50,000 over 7 years: CAGR = (250000/100000)<sup>1/7</sup> &minus; 1 = <strong>13.9% per year</strong>.',
+        'ref' => array('head' => array('Growth', '3 yr', '5 yr', '10 yr'), 'note' => 'CAGR for a given total multiple.',
+            'rows' => array(array('2&times;', '26.0%', '14.9%', '7.2%'), array('3&times;', '44.2%', '24.6%', '11.6%'), array('5&times;', '71.0%', '38.0%', '17.5%'))),
+        'faq' => array(
+            array('What is CAGR?', 'CAGR is the constant annual rate at which an investment would have grown to its final value from its starting value, if it grew steadily and reinvested returns each year. It smooths out year-to-year volatility.'),
+            array('Is CAGR the same as average return?', 'No. The simple average of yearly returns is usually higher than CAGR because it ignores the drag of volatility. A +50% year followed by a &minus;50% year averages 0% but the CAGR is &minus;13.4%.'),
+        ),
+    ),
+    'inflation-calculator' => array(
+        'cat' => '', 'title' => 'Inflation Calculator', 'sym' => 'INR',
+        'blurb' => 'See how much today&rsquo;s money will be worth in the future once inflation erodes its purchasing power.',
+        'inputs' => array(
+            array('a', 'Amount today', 'money', 1000000),
+            array('r', 'Average inflation rate (%)', 'pct', 6),
+            array('y', 'Years', 'num', 15),
+        ),
+        'formula' => 'Future value of purchasing power = Amount / (1 + inflation)<sup>years</sup>',
+        'example' => 'Rs 10,00,000 today, at 6% inflation for 15 years, will buy what <strong>Rs 4,17,265</strong> buys today. Put another way, you would need about Rs 23,96,558 in 15 years to match today&rsquo;s Rs 10,00,000.',
+        'ref' => array('head' => array('Inflation', 'in 10 yr', 'in 20 yr', 'in 30 yr'), 'note' => 'What Rs 100 today will be worth.',
+            'rows' => array(array('4%', 'Rs 68', 'Rs 46', 'Rs 31'), array('6%', 'Rs 56', 'Rs 31', 'Rs 17'), array('8%', 'Rs 46', 'Rs 21', 'Rs 10'))),
+        'faq' => array(
+            array('Why does inflation matter for savings?', 'If your savings earn less than the inflation rate, their real value falls every year even though the rupee figure rises. To preserve purchasing power your after-tax return must beat inflation.'),
+            array('What inflation rate should I assume?', 'India&rsquo;s long-run retail inflation has averaged roughly 5-6%. For long-term goals like retirement, many planners use 6-7% to be conservative; for education costs, higher.'),
+        ),
+    ),
+
+    /* ---------------- INDIA ---------------- */
+    'sip-calculator' => array(
+        'cat' => 'india', 'title' => 'SIP Calculator', 'sym' => 'INR',
+        'blurb' => 'Project the maturity value of a monthly mutual-fund SIP, with an optional annual step-up.',
+        'inputs' => array(
+            array('m', 'Monthly investment', 'money', 10000),
+            array('r', 'Expected annual return (%)', 'pct', 12),
+            array('y', 'Investment period (years)', 'num', 15),
+            array('s', 'Annual step-up (%)', 'pct', 0),
+        ),
+        'formula' => 'FV = &Sigma; [ P<sub>k</sub> &times; (1+i)<sup>(n&minus;k)</sup> ] &nbsp; where i = monthly return, n = months, P<sub>k</sub> steps up each year',
+        'example' => 'Rs 10,000/month for 15 years at 12% expected return: invested Rs 18,00,000, maturity value &approx; <strong>Rs 50,45,760</strong>. With a 10% annual step-up the maturity value rises to about Rs 79,00,000.',
+        'ref' => array('head' => array('Monthly SIP', '5 yr', '10 yr', '15 yr', '20 yr'), 'note' => 'Maturity value at 12% expected return, no step-up.',
+            'rows' => array(array('Rs 5,000', '4.12 L', '11.6 L', '25.2 L', '50.0 L'), array('Rs 10,000', '8.25 L', '23.2 L', '50.5 L', '99.9 L'), array('Rs 25,000', '20.6 L', '58.1 L', '1.26 Cr', '2.50 Cr'))),
+        'faq' => array(
+            array('How is SIP return calculated?', 'Each monthly instalment is compounded from its investment date to the end of the period at the assumed monthly return (annual return &divide; 12). The maturity value is the sum of all instalments plus their growth.'),
+            array('What return should I assume for a SIP?', 'Equity mutual funds in India have delivered roughly 11-13% CAGR over long periods, but returns are not guaranteed and vary widely. 10-12% is a reasonable planning assumption; debt funds are lower.'),
+            array('What is a step-up SIP?', 'A step-up (or top-up) SIP increases your monthly contribution by a fixed percentage each year, usually in line with salary growth. Even a 10% step-up can add 50% or more to the final corpus over 15-20 years.'),
+        ),
+    ),
+    'income-tax-calculator' => array(
+        'cat' => 'india', 'title' => 'Income Tax Calculator (New vs Old Regime)', 'sym' => 'INR',
+        'blurb' => 'Compare your income tax under the New and Old regimes for FY 2025-26, including the standard deduction and Section 87A rebate.',
+        'inputs' => array(
+            array('inc', 'Gross annual salary income', 'money', 1200000),
+            array('ded', 'Old-regime deductions (80C, 80D, HRA, home-loan interest etc.)', 'money', 250000),
+        ),
+        'formula' => 'New regime FY25-26 slabs: 0 up to Rs 4L; 5% Rs 4-8L; 10% Rs 8-12L; 15% Rs 12-16L; 20% Rs 16-20L; 25% Rs 20-24L; 30% above. Standard deduction Rs 75,000. Full rebate under 87A up to Rs 12L taxable. Old regime: 0 up to Rs 2.5L; 5% Rs 2.5-5L; 20% Rs 5-10L; 30% above; standard deduction Rs 50,000; rebate up to Rs 5L taxable. 4% cess on tax in both.',
+        'example' => 'Salary Rs 12,00,000 with Rs 2,50,000 of old-regime deductions: New regime tax after standard deduction and 87A &approx; <strong>Rs 71,500</strong>; Old regime &approx; Rs 66,300. The Old regime wins here by about Rs 5,000 because of the deductions.',
+        'ref' => array('head' => array('Salary', 'New regime tax', 'Old (Rs 2L ded.)'), 'note' => 'Indicative, FY 2025-26, incl. 4% cess.',
+            'rows' => array(array('Rs 7,00,000', 'Rs 0', 'Rs 33,800'), array('Rs 12,00,000', 'Rs 71,500', 'Rs 96,200'), array('Rs 20,00,000', 'Rs 2,54,800', 'Rs 3,04,200'), array('Rs 50,00,000', 'Rs 12,20,000', 'Rs 12,66,000'))),
+        'faq' => array(
+            array('Which tax regime is better for me?', 'The New regime has lower slab rates but almost no deductions; the Old regime has higher rates but lets you claim 80C, 80D, HRA, home-loan interest and more. As a rule of thumb, if your total deductions exceed roughly Rs 3.75-4 lakh the Old regime usually wins; below that the New regime does. Run your own numbers above.'),
+            array('What is the Section 87A rebate?', 'A rebate that makes tax zero for lower incomes. Under the New regime for FY 2025-26 it applies up to Rs 12 lakh of taxable income; under the Old regime up to Rs 5 lakh.'),
+            array('Is the standard deduction available in the New regime?', 'Yes. Salaried taxpayers get a Rs 75,000 standard deduction under the New regime and Rs 50,000 under the Old regime for FY 2025-26.'),
+        ),
+    ),
+    'ppf-calculator' => array(
+        'cat' => 'india', 'title' => 'PPF Calculator', 'sym' => 'INR',
+        'blurb' => 'Project the maturity value of a Public Provident Fund account over its 15-year term.',
+        'inputs' => array(
+            array('a', 'Yearly investment', 'money', 150000),
+            array('r', 'PPF interest rate (%)', 'pct', 7.1),
+            array('y', 'Years', 'num', 15),
+        ),
+        'formula' => 'Each year&rsquo;s deposit earns compound interest to maturity: FV = &Sigma; A &times; (1+r)<sup>(n&minus;k+1)</sup>',
+        'example' => 'Rs 1,50,000 a year (the annual cap) for 15 years at 7.1%: total invested Rs 22,50,000, maturity value &approx; <strong>Rs 40,68,209</strong>, of which Rs 18,18,209 is tax-free interest.',
+        'ref' => array('head' => array('Yearly deposit', '15-yr maturity @ 7.1%'), 'note' => 'Interest is fully tax-free (EEE).',
+            'rows' => array(array('Rs 50,000', 'Rs 13.56 L'), array('Rs 1,00,000', 'Rs 27.12 L'), array('Rs 1,50,000', 'Rs 40.68 L'))),
+        'faq' => array(
+            array('What is the PPF contribution limit?', 'You can deposit between Rs 500 and Rs 1,50,000 per financial year, in up to 12 instalments. Deposits qualify for a Section 80C deduction and the interest and maturity amount are tax-free.'),
+            array('Can I extend PPF after 15 years?', 'Yes, in blocks of 5 years, with or without further contributions. During an extension you can make one partial withdrawal per year.'),
+            array('How is PPF interest calculated?', 'Interest is calculated monthly on the lowest balance between the 5th and the last day of the month, and credited once a year on 31 March. To get a full month&rsquo;s interest, deposit before the 5th.'),
+        ),
+    ),
+    'gratuity-calculator' => array(
+        'cat' => 'india', 'title' => 'Gratuity Calculator', 'sym' => 'INR',
+        'blurb' => 'Calculate the gratuity payable on leaving a job, under the Payment of Gratuity Act.',
+        'inputs' => array(
+            array('b', 'Last drawn Basic + DA (monthly)', 'money', 60000),
+            array('y', 'Years of service', 'num', 12),
+        ),
+        'formula' => 'Gratuity = 15 &times; last drawn (Basic + DA) &times; years of service / 26',
+        'example' => 'Last Basic + DA of Rs 60,000 and 12 years of service: Gratuity = 15 &times; 60000 &times; 12 / 26 = <strong>Rs 4,15,385</strong>. Service of 6 months or more counts as a full year.',
+        'ref' => array('head' => array('Basic + DA', '10 yr', '20 yr', '30 yr'), 'note' => 'Rounded; capped at Rs 20,00,000 tax-free.',
+            'rows' => array(array('Rs 30,000', 'Rs 1.73 L', 'Rs 3.46 L', 'Rs 5.19 L'), array('Rs 60,000', 'Rs 3.46 L', 'Rs 6.92 L', 'Rs 10.38 L'), array('Rs 1,00,000', 'Rs 5.77 L', 'Rs 11.54 L', 'Rs 17.31 L'))),
+        'faq' => array(
+            array('Who is eligible for gratuity?', 'Employees of establishments covered by the Payment of Gratuity Act become eligible after completing five years of continuous service, except in the case of death or disablement.'),
+            array('Why is the formula divided by 26?', 'The Act treats a month as 26 working days (excluding Sundays), so 15 days&rsquo; wages is 15/26 of the monthly Basic + DA.'),
+            array('Is gratuity taxable?', 'Gratuity up to Rs 20,00,000 is tax-free for employees covered by the Act. Anything above that is taxed as salary.'),
+        ),
+    ),
+
+    /* ---------------- USA ---------------- */
+    '401k-calculator' => array(
+        'cat' => 'usa', 'title' => '401(k) Calculator', 'sym' => 'USD',
+        'blurb' => 'Project your 401(k) balance at retirement from your contributions, employer match and expected returns.',
+        'inputs' => array(
+            array('sal', 'Current annual salary', 'money', 90000),
+            array('cpc', 'Your contribution (% of salary)', 'pct', 10),
+            array('mpc', 'Employer match (% of salary)', 'pct', 4),
+            array('bal', 'Current 401(k) balance', 'money', 50000),
+            array('ret', 'Expected annual return (%)', 'pct', 7),
+            array('gr', 'Annual salary growth (%)', 'pct', 3),
+            array('yr', 'Years to retirement', 'num', 25),
+        ),
+        'formula' => 'Each year: contribution = salary &times; (your % + employer match %); balance = (balance + contribution) &times; (1 + return). Salary grows by the growth rate each year.',
+        'example' => 'A $90,000 salary, 10% employee + 4% employer, $50,000 starting balance, 7% return, 3% raises, 25 years to go: projected balance &approx; <strong>$1.42 million</strong> (about $780,000 of it investment growth).',
+        'ref' => array('head' => array('Salary', '20 yr', '30 yr'), 'note' => '10% + 4% match, 7% return, 3% raises, $0 start.',
+            'rows' => array(array('$60,000', '$430,000', '$960,000'), array('$90,000', '$650,000', '$1.44 M'), array('$150,000', '$1.08 M', '$2.40 M'))),
+        'faq' => array(
+            array('How much should I contribute to my 401(k)?', 'At a minimum, contribute enough to get the full employer match - that is an immediate 100% return on those dollars. Many advisers suggest 10-15% of salary including the match for a comfortable retirement.'),
+            array('What is the 401(k) contribution limit?', 'For 2025 the employee deferral limit is $23,500, with an extra $7,500 catch-up for those 50 and older. Employer contributions are on top of that, up to a combined limit.'),
+        ),
+    ),
+    'roth-ira-vs-traditional-ira' => array(
+        'cat' => 'usa', 'title' => 'Roth IRA vs Traditional IRA Calculator', 'sym' => 'USD',
+        'blurb' => 'Compare after-tax retirement value from a Roth IRA (post-tax contributions, tax-free growth) versus a Traditional IRA (pre-tax contributions, taxed withdrawals).',
+        'inputs' => array(
+            array('c', 'Annual contribution', 'money', 7000),
+            array('ret', 'Expected annual return (%)', 'pct', 7),
+            array('yr', 'Years until retirement', 'num', 30),
+            array('tn', 'Tax rate now (%)', 'pct', 24),
+            array('tr', 'Tax rate in retirement (%)', 'pct', 22),
+        ),
+        'formula' => 'Roth: contribute post-tax, withdraw tax-free -> FV = &Sigma; C&times;(1+r)<sup>t</sup>. Traditional: contribute pre-tax (invest the tax saving too), withdraw taxed -> FV &times; (1 &minus; retirement tax rate).',
+        'example' => '$7,000/year for 30 years at 7%: the Roth ends at about <strong>$707,000 tax-free</strong>. The Traditional grows to the same $707,000 but a 22% retirement tax leaves ~$551,000 - so the Roth wins if your tax rate is the same or higher later.',
+        'ref' => array('head' => array('Now vs later tax', 'Better choice'), 'note' => 'General guidance only.',
+            'rows' => array(array('Lower rate now', 'Roth (lock in the low rate)'), array('Same rate', 'Roth (contribution-limit advantage)'), array('Much lower rate later', 'Traditional'))),
+        'faq' => array(
+            array('Should I choose a Roth or Traditional IRA?', 'If you expect to be in the same or a higher tax bracket in retirement, the Roth is usually better because withdrawals are tax-free and it effectively lets you shelter more money. If you expect a much lower bracket later, the Traditional&rsquo;s upfront deduction can win.'),
+            array('What are the IRA contribution limits?', 'For 2025 the total across all your IRAs is $7,000, or $8,000 if you are 50 or older. Roth contributions phase out at higher incomes.'),
+        ),
+    ),
+    'us-mortgage-piti' => array(
+        'cat' => 'usa', 'title' => 'US Mortgage PITI Calculator', 'sym' => 'USD',
+        'blurb' => 'Full monthly housing cost: Principal, Interest, property Taxes, homeowners Insurance and PMI.',
+        'inputs' => array(
+            array('price', 'Home price', 'money', 400000),
+            array('down', 'Down payment', 'money', 60000),
+            array('rate', 'Interest rate (%)', 'pct', 6.5),
+            array('term', 'Loan term (years)', 'num', 30),
+            array('tax', 'Property tax (% of price / year)', 'pct', 1.1),
+            array('ins', 'Homeowners insurance ($/year)', 'money', 1800),
+            array('pmi', 'PMI rate (% of loan / year, if down < 20%)', 'pct', 0.6),
+        ),
+        'formula' => 'PITI = P&amp;I + (price &times; tax% / 12) + (insurance / 12) + PMI. PMI applies while the loan-to-value ratio is above 80%.',
+        'example' => '$400,000 home, $60,000 down (85% LTV), 6.5% for 30 years, 1.1% tax, $1,800 insurance, 0.6% PMI: P&amp;I $2,149 + tax $367 + insurance $150 + PMI $170 = <strong>$2,836/month</strong>.',
+        'ref' => array('head' => array('Home price', '20% down PITI', '10% down PITI (with PMI)'), 'note' => '6.5%/30yr, 1.1% tax, $1,800 insurance.',
+            'rows' => array(array('$300,000', '$1,972', '$2,283'), array('$400,000', '$2,629', '$3,044'), array('$600,000', '$3,944', '$4,566'))),
+        'faq' => array(
+            array('What is PITI?', 'PITI stands for Principal, Interest, Taxes and Insurance - the four parts of a typical monthly mortgage payment held in escrow by the lender. Add PMI when the down payment is below 20%.'),
+            array('When does PMI go away?', 'By law, PMI on a conventional loan must be cancelled automatically once the loan balance reaches 78% of the original home value, and you can request removal at 80%.'),
+        ),
+    ),
+
+    /* ---------------- UAE ---------------- */
+    'uae-gratuity-calculator' => array(
+        'cat' => 'uae', 'title' => 'UAE Gratuity Calculator (End of Service Benefit)', 'sym' => 'AED',
+        'blurb' => 'End-of-Service Benefit (EOSB) for a limited or unlimited contract under the UAE Labour Law.',
+        'inputs' => array(
+            array('b', 'Last basic salary (monthly, AED)', 'money', 10000),
+            array('y', 'Years of service', 'num', 6),
+            array('res', 'End of employment', 'sel', 'employer', array('employer' => 'Employer ended / resignation after full term', 'resign35' => 'Resignation, 3-5 years service', 'resign13' => 'Resignation, 1-3 years service', 'under1' => 'Under 1 year')),
+        ),
+        'formula' => 'First 5 years: 21 days&rsquo; basic pay per year. After 5 years: 30 days&rsquo; basic pay per year. Daily pay = basic / 30. On resignation with 1-3 years service only 1/3 is payable; 3-5 years, 2/3; 5+ years, full. Total is capped at 2 years&rsquo; basic salary.',
+        'example' => 'AED 10,000 basic, 6 years, employer-ended: (5 &times; 21 + 1 &times; 30) days = 135 days &times; (10000/30) = <strong>AED 45,000</strong>.',
+        'ref' => array('head' => array('Basic', '3 yr', '5 yr', '8 yr'), 'note' => 'Employer-ended / full-term, before the 2-year cap.',
+            'rows' => array(array('AED 8,000', 'AED 16,800', 'AED 28,000', 'AED 52,000'), array('AED 15,000', 'AED 31,500', 'AED 52,500', 'AED 97,500'), array('AED 25,000', 'AED 52,500', 'AED 87,500', 'AED 1,62,500'))),
+        'faq' => array(
+            array('Who is entitled to gratuity in the UAE?', 'Any employee who completes at least one year of continuous service is entitled to an end-of-service gratuity on leaving, calculated on the last basic salary (excluding allowances).'),
+            array('How does resignation affect UAE gratuity?', 'Under the older unlimited-contract rules, resigning between 1 and 3 years of service paid one-third of the gratuity, 3 to 5 years paid two-thirds, and over 5 years paid the full amount. Newer fixed-term contract rules pay the full accrued amount regardless of who ends it - check your contract and the current law.'),
+        ),
+    ),
+    'uae-vat-calculator' => array(
+        'cat' => 'uae', 'title' => 'UAE VAT Calculator (5%)', 'sym' => 'AED',
+        'blurb' => 'Add or remove the UAE&rsquo;s 5% VAT - forward (net to gross) and reverse (gross to net).',
+        'inputs' => array(
+            array('amt', 'Amount (AED)', 'money', 1000),
+            array('dir', 'Calculation', 'sel', 'add', array('add' => 'Add VAT (amount is before tax)', 'remove' => 'Remove VAT (amount includes tax)')),
+        ),
+        'formula' => 'Add VAT: VAT = amount &times; 5%; gross = amount &times; 1.05. Remove VAT: net = amount / 1.05; VAT = amount &minus; net.',
+        'example' => 'AED 1,000 before tax: VAT = AED 50, total = <strong>AED 1,050</strong>. AED 1,000 inclusive: net = AED 952.38, VAT = AED 47.62.',
+        'ref' => array('head' => array('Net amount', 'VAT (5%)', 'Gross'), 'note' => 'Standard-rated supplies.',
+            'rows' => array(array('AED 100', 'AED 5.00', 'AED 105.00'), array('AED 1,000', 'AED 50.00', 'AED 1,050.00'), array('AED 10,000', 'AED 500.00', 'AED 10,500.00'))),
+        'faq' => array(
+            array('What is the VAT rate in the UAE?', 'The standard VAT rate is 5%. Some supplies are zero-rated (exports, certain healthcare and education) or exempt (some financial services, residential leases).'),
+            array('How do I calculate VAT backwards from a total?', 'Divide the VAT-inclusive amount by 1.05 to get the net amount, then subtract to find the VAT. For AED 1,050 inclusive: 1050 / 1.05 = AED 1,000 net and AED 50 VAT.'),
+        ),
+    ),
+
+    ));
+    return $memo;
+}
+
+function mp_calc_cats() { return array('' => 'General', 'india' => 'India', 'usa' => 'United States', 'uae' => 'UAE & Middle East'); }
+function mp_calc_url($slug, $cat = '') {
+    return home_url('/calculators/' . ($cat ? $cat . '/' : '') . $slug . '/');
+}
+function mp_calc_ctx() {
+    $obj = get_queried_object();
+    if (!($obj instanceof WP_Post) || $obj->post_name !== 'calculators') return array('', '');
+    $slug = sanitize_title((string) get_query_var('mp_calc'));
+    if (!$slug || !isset(mp_calc_registry()[$slug])) return array('', '');
+    return array($slug, mp_calc_registry()[$slug]['cat']);
+}
+function mp_calc_is_page() { $c = mp_calc_ctx(); return $c[0] !== ''; }
+function mp_calc_is_hub() {
+    $obj = get_queried_object();
+    return ($obj instanceof WP_Post) && $obj->post_name === 'calculators' && !get_query_var('mp_calc');
+}
+
+/* ---- routing ---- */
+add_action('init', function () {
+    add_rewrite_rule('^calculators/(india|usa|uae)/([a-z0-9-]+)/?$', 'index.php?pagename=calculators&mp_calc=$matches[2]', 'top');
+    add_rewrite_rule('^calculators/([a-z0-9-]+)/?$', 'index.php?pagename=calculators&mp_calc=$matches[1]', 'top');
+    if (get_option('mp_calc_rw_v') !== '1') { flush_rewrite_rules(false); update_option('mp_calc_rw_v', '1'); }
+}, 22);
+add_filter('query_vars', function ($v) { $v[] = 'mp_calc'; return $v; });
+add_filter('redirect_canonical', function ($r) { return get_query_var('mp_calc') ? false : $r; });
+add_action('template_redirect', function () {
+    $obj = get_queried_object();
+    if (!($obj instanceof WP_Post) || $obj->post_name !== 'calculators') return;
+    $slug = sanitize_title((string) get_query_var('mp_calc'));
+    if ($slug && !isset(mp_calc_registry()[$slug])) { wp_safe_redirect(home_url('/calculators/'), 301); exit; }
+    do_action('litespeed_control_set_ttl', 3600);
+    header('Cache-Control: public, max-age=3600, s-maxage=3600');
+}, 9);
+add_action('init', function () {
+    if (get_option('mp_calc_page_v') === '1') return;
+    if (wp_doing_ajax() || wp_doing_cron() || (defined('REST_REQUEST') && REST_REQUEST)) return;
+    if (!get_page_by_path('calculators')) {
+        wp_insert_post(array('post_type' => 'page', 'post_status' => 'publish', 'post_name' => 'calculators',
+            'post_title' => 'Financial Calculators - SIP, EMI, Tax, Compound Interest & More',
+            'post_author' => function_exists('mp_eeat_user_id') ? (mp_eeat_user_id('deepak') ?: 1) : 1,
+            'post_content' => "<p>Free, ad-light financial calculators for India, the US and the Gulf - each with the formula, a worked example and a quick-reference table.</p>\n[mp_calculators]"));
+    } elseif (strpos((string) get_page_by_path('calculators')->post_content, '[mp_calculators]') === false) {
+        $p = get_page_by_path('calculators');
+        wp_update_post(array('ID' => $p->ID, 'post_content' => $p->post_content . "\n[mp_calculators]"));
+    }
+    update_option('mp_calc_page_v', '1');
+    flush_rewrite_rules(false);
+}, 30);
+
+/* ---- shortcode ---- */
+add_shortcode('mp_calculators', function () {
+    list($slug) = mp_calc_ctx();
+    return $slug ? mp_calc_render_one($slug) : mp_calc_render_hub();
+});
+
+function mp_calc_render_hub() {
+    $reg = mp_calc_registry(); $cats = mp_calc_cats();
+    $by = array();
+    foreach ($reg as $sl => $c) $by[$c['cat']][$sl] = $c;
+    ob_start(); ?>
+<div class="mp-calc-hub">
+  <?php foreach ($cats as $ck => $clabel) : if (empty($by[$ck])) continue; ?>
+    <h2><?php echo esc_html($clabel); ?> calculators</h2>
+    <div class="mp-calc-hub__grid">
+      <?php foreach ($by[$ck] as $sl => $c) : ?>
+        <a href="<?php echo esc_url(mp_calc_url($sl, $ck)); ?>">
+          <strong><?php echo esc_html($c['title']); ?></strong>
+          <span><?php echo esc_html(wp_strip_all_tags($c['blurb'])); ?></span>
+        </a>
+      <?php endforeach; ?>
+    </div>
+  <?php endforeach; ?>
+  <?php echo mp_calc_css(); ?>
+</div>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_calc_field($in) {
+    list($k, $label, $type) = $in;
+    $def = isset($in[3]) ? $in[3] : 0;
+    $opts = isset($in[4]) ? $in[4] : array();
+    $h = '<div class="mp-calc2__f"><label for="mpc-' . esc_attr($k) . '">' . esc_html($label) . '</label>';
+    if ($type === 'sel') {
+        $h .= '<select id="mpc-' . esc_attr($k) . '" data-k="' . esc_attr($k) . '">';
+        foreach ($opts as $ov => $ol) $h .= '<option value="' . esc_attr($ov) . '"' . selected($ov, $def, false) . '>' . esc_html($ol) . '</option>';
+        $h .= '</select>';
+    } else {
+        $step = ($type === 'pct') ? '0.1' : ($type === 'money' ? '100' : '1');
+        $h .= '<input type="number" id="mpc-' . esc_attr($k) . '" data-k="' . esc_attr($k) . '" data-t="' . esc_attr($type) . '" value="' . esc_attr($def) . '" step="' . $step . '" min="0" inputmode="decimal">';
+    }
+    return $h . '</div>';
+}
+
+function mp_calc_render_one($slug) {
+    $reg = mp_calc_registry();
+    if (!isset($reg[$slug])) return '';
+    $c = $reg[$slug];
+    $sym = $c['sym'] === 'USD' ? '$' : ($c['sym'] === 'AED' ? 'AED ' : '&#8377;');
+    ob_start(); ?>
+<div class="mp-calc2" data-calc="<?php echo esc_attr($slug); ?>" data-sym="<?php echo esc_attr(html_entity_decode($sym)); ?>" data-ccy="<?php echo esc_attr($c['sym']); ?>">
+  <p class="mp-calc2__crumb"><a href="<?php echo esc_url(home_url('/calculators/')); ?>">&larr; All calculators</a></p>
+  <p class="mp-calc2__blurb"><?php echo wp_kses_post($c['blurb']); ?></p>
+
+  <div class="mp-calc2__panel">
+    <div class="mp-calc2__in">
+      <?php foreach ($c['inputs'] as $in) echo mp_calc_field($in); ?>
+    </div>
+    <div class="mp-calc2__out">
+      <span class="mp-calc2__out-lbl" data-role="lbl">Result</span>
+      <strong class="mp-calc2__out-big" data-role="big"><?php echo $sym; ?>0</strong>
+      <div class="mp-calc2__rows" data-role="rows"></div>
+      <svg class="mp-calc2__chart" data-role="chart" viewBox="0 0 300 90" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+  </div>
+
+  <h2>Formula</h2>
+  <p class="mp-calc2__formula"><?php echo wp_kses_post($c['formula']); ?></p>
+  <h2>Worked example</h2>
+  <p><?php echo wp_kses_post($c['example']); ?></p>
+
+  <?php if (!empty($c['ref'])) : $rf = $c['ref']; ?>
+  <h2>Quick reference</h2>
+  <div class="mp-comm__tablewrap"><table class="mp-comm__table">
+    <thead><tr><?php foreach ($rf['head'] as $th) echo '<th>' . wp_kses_post($th) . '</th>'; ?></tr></thead>
+    <tbody><?php foreach ($rf['rows'] as $r) { echo '<tr>'; foreach ($r as $td) echo '<td>' . wp_kses_post($td) . '</td>'; echo '</tr>'; } ?></tbody>
+  </table></div>
+  <?php if (!empty($rf['note'])) echo '<p class="mp-calc2__note">' . wp_kses_post($rf['note']) . '</p>'; ?>
+  <?php endif; ?>
+
+  <h2>Frequently asked questions</h2>
+  <div class="mp-comm__faq">
+    <?php foreach ($c['faq'] as $i => $qa) : ?>
+      <details<?php echo $i === 0 ? ' open' : ''; ?>><summary><?php echo wp_kses_post($qa[0]); ?></summary><p><?php echo wp_kses_post($qa[1]); ?></p></details>
+    <?php endforeach; ?>
+  </div>
+
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and education platform. Calculators are for illustration using the inputs you provide; results are not financial advice or a guarantee of returns. Tax rules and statutory rates change - verify current figures before acting.</div>
+  <?php echo mp_calc_css(); ?>
+</div>
+<script><?php echo mp_calc_engine_js(); ?></script>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_calc_css() {
+    static $d = false; if ($d) return ''; $d = true;
+    return '<style id="mp-calc-css">
+.mp-calc-hub h2,.mp-calc2 h2{font-size:19px;margin:24px 0 10px}
+.mp-calc-hub__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.mp-calc-hub__grid a{display:block;border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:13px 15px;text-decoration:none;color:inherit;background:var(--mp-surface,#fff)}
+.mp-calc-hub__grid a:hover{border-color:var(--mp-muted,#94a3b8)}
+.mp-calc-hub__grid strong{display:block;font-size:14.5px;margin-bottom:4px}
+.mp-calc-hub__grid span{font-size:12.5px;color:var(--mp-muted,#64748b)}
+.mp-calc2{font-size:15px;line-height:1.6}
+.mp-calc2__crumb{font-size:13px;margin:0 0 6px}
+.mp-calc2__blurb{color:var(--mp-muted,#64748b);font-size:14px}
+.mp-calc2__panel{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;overflow:hidden;margin:10px 0}
+.mp-calc2__in{padding:16px;display:flex;flex-direction:column;gap:12px}
+.mp-calc2__f{display:flex;flex-direction:column;gap:5px}
+.mp-calc2__f label{font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-calc2__f input,.mp-calc2__f select{padding:8px 9px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);font-family:inherit}
+.mp-calc2__out{background:#0d3b2e;color:#e6f4ee;padding:18px;display:flex;flex-direction:column;align-items:center;text-align:center}
+.mp-calc2__out-lbl{font-size:13px;opacity:.85}
+.mp-calc2__out-big{font-size:28px;color:#34d399;margin:4px 0 12px;font-variant-numeric:tabular-nums}
+.mp-calc2__rows{width:100%;font-size:13px;display:flex;flex-direction:column;gap:6px}
+.mp-calc2__rows>div{display:flex;justify-content:space-between;gap:10px;border-top:1px solid rgba(255,255,255,.12);padding-top:6px}
+.mp-calc2__chart{width:100%;height:70px;margin-top:12px;overflow:visible}
+.mp-calc2__formula{background:var(--mp-surface2,#f8fafc);border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;padding:10px 12px;font-size:13.5px}
+.mp-calc2__note{font-size:12px;color:var(--mp-muted,#64748b)}
+@media(max-width:620px){.mp-calc2__panel{grid-template-columns:1fr}}
+html[data-theme="dark"] .mp-calc-hub__grid a,html[data-theme="dark"] .mp-calc2__panel,html[data-theme="dark"] .mp-calc2__formula{background:#0f172a;border-color:rgba(255,255,255,.08)}
+</style>';
+}
+
+function mp_calc_engine_js() {
+    ob_start(); ?>
+(function(){
+  var R = document.currentScript.closest('.mp-calc2') || document.querySelector('.mp-calc2');
+  if (!R) return;
+  var slug = R.getAttribute('data-calc'), SYM = R.getAttribute('data-sym') || '₹', CCY = R.getAttribute('data-ccy');
+  var enIN = CCY === 'INR';
+  function fmt(x){ if (!isFinite(x)) x = 0; var neg = x < 0; x = Math.abs(Math.round(x));
+    return (neg?'-':'') + SYM + x.toLocaleString(enIN ? 'en-IN' : 'en-US'); }
+  function pctS(x){ return (Math.round(x*10)/10) + '%'; }
+  function V(){ var o = {}; R.querySelectorAll('[data-k]').forEach(function(el){
+    o[el.getAttribute('data-k')] = (el.tagName === 'SELECT') ? el.value : (parseFloat(el.value) || 0); }); return o; }
+
+  var CALC = {
+    'compound-interest': function(v){
+      var n = {annually:1,quarterly:4,monthly:12,daily:365}[v.f] || 12, i = v.r/100/n;
+      var months = Math.round(v.y*12), mi = Math.pow(1+i, n/12) - 1; // effective monthly rate
+      var bal = v.p, inv = v.p, pts = [bal];
+      for (var m=1; m<=months; m++){ bal = bal*(1+mi) + (v.c||0); inv += (v.c||0); if (m%12===0) pts.push(bal); }
+      return { lbl:'Maturity value', big:fmt(bal), rows:[['Invested',fmt(inv)],['Interest earned',fmt(bal-inv)],['Total','<b>'+fmt(bal)+'</b>']], chart:pts };
+    },
+    'loan-emi': function(v){
+      var r = v.r/100/12, nm = Math.round(v.y*12), emi = r? v.p*r*Math.pow(1+r,nm)/(Math.pow(1+r,nm)-1) : v.p/nm;
+      var tot = emi*nm, bal=v.p, pts=[bal];
+      for (var m=1;m<=nm;m++){ bal -= (emi - bal*r); if (m%12===0) pts.push(Math.max(bal,0)); }
+      return { lbl:'Monthly EMI', big:fmt(emi), rows:[['Principal',fmt(v.p)],['Total interest',fmt(tot-v.p)],['Total payment','<b>'+fmt(tot)+'</b>']], chart:pts };
+    },
+    'mortgage-calculator': function(v){
+      var L = Math.max(v.p - v.d, 0), r = v.r/100/12, nm = Math.round(v.y*12);
+      var pay = r? L*r*Math.pow(1+r,nm)/(Math.pow(1+r,nm)-1) : L/nm, tot = pay*nm, bal=L, pts=[bal];
+      for (var m=1;m<=nm;m++){ bal -= (pay - bal*r); if (m%12===0) pts.push(Math.max(bal,0)); }
+      return { lbl:'Monthly payment (P&I)', big:fmt(pay), rows:[['Loan amount',fmt(L)],['Total interest',fmt(tot-L)],['Total paid','<b>'+fmt(tot)+'</b>']], chart:pts };
+    },
+    'cagr-calculator': function(v){
+      var g = (v.b>0 && v.y>0) ? Math.pow(v.e/v.b, 1/v.y)-1 : 0;
+      var pts=[v.b]; for (var k=1;k<=v.y;k++) pts.push(v.b*Math.pow(1+g,k));
+      return { lbl:'CAGR', big:pctS(g*100), rows:[['Total return',pctS((v.e/v.b-1)*100)],['Absolute gain',fmt(v.e-v.b)],['Multiple',(v.e/v.b).toFixed(2)+'x']], chart:pts };
+    },
+    'inflation-calculator': function(v){
+      var pw = v.a / Math.pow(1+v.r/100, v.y), need = v.a * Math.pow(1+v.r/100, v.y);
+      var pts=[v.a]; for (var k=1;k<=v.y;k++) pts.push(v.a/Math.pow(1+v.r/100,k));
+      return { lbl:'Future purchasing power of '+fmt(v.a), big:fmt(pw), rows:[['Value lost to inflation',fmt(v.a-pw)],['To match '+fmt(v.a)+' you would need','<b>'+fmt(need)+'</b>']], chart:pts };
+    },
+    'sip-calculator': function(v){
+      var i = v.r/100/12, months = Math.round(v.y*12), P = v.m, bal=0, inv=0, pts=[0];
+      for (var m=1;m<=months;m++){ bal = bal*(1+i) + P; inv += P; if (m%12===0){ pts.push(bal); if (v.s) P = P*(1+v.s/100); } }
+      return { lbl:'Maturity value', big:fmt(bal), rows:[['Total invested',fmt(inv)],['Estimated returns',fmt(bal-inv)],['Maturity value','<b>'+fmt(bal)+'</b>']], chart:pts };
+    },
+    'income-tax-calculator': function(v){
+      function slabTax(ti, slabs){ var t=0; for (var s=0;s<slabs.length;s++){ var lo=slabs[s][0], hi=slabs[s][1], rt=slabs[s][2];
+        if (ti>lo) t += (Math.min(ti,hi)-lo)*rt/100; } return t; }
+      var newTI = Math.max(v.inc - 75000, 0);
+      var newT = slabTax(newTI, [[0,400000,0],[400000,800000,5],[800000,1200000,10],[1200000,1600000,15],[1600000,2000000,20],[2000000,2400000,25],[2400000,1e12,30]]);
+      if (newTI <= 1200000) newT = 0;
+      newT = newT*1.04;
+      var oldTI = Math.max(v.inc - 50000 - (v.ded||0), 0);
+      var oldT = slabTax(oldTI, [[0,250000,0],[250000,500000,5],[500000,1000000,20],[1000000,1e12,30]]);
+      if (oldTI <= 500000) oldT = 0;
+      oldT = oldT*1.04;
+      var better = newT <= oldT ? 'New regime' : 'Old regime';
+      return { lbl:'Lower tax: '+better, big:fmt(Math.min(newT,oldT)), rows:[['New regime tax',fmt(newT)],['Old regime tax',fmt(oldT)],['You save with '+better,'<b>'+fmt(Math.abs(newT-oldT))+'</b>']], chart:[newT,oldT], chartBar:true };
+    },
+    'ppf-calculator': function(v){
+      var bal=0, inv=0, pts=[0];
+      for (var k=1;k<=v.y;k++){ bal = (bal + v.a) * (1 + v.r/100); inv += v.a; pts.push(bal); }
+      return { lbl:'Maturity value (tax-free)', big:fmt(bal), rows:[['Total invested',fmt(inv)],['Interest earned',fmt(bal-inv)],['Maturity value','<b>'+fmt(bal)+'</b>']], chart:pts };
+    },
+    'gratuity-calculator': function(v){
+      var yrs = Math.round(v.y), g = 15 * v.b * yrs / 26; g = Math.min(g, 2000000+0);
+      return { lbl:'Gratuity payable', big:fmt(g), rows:[['Years counted',yrs],['Formula','15 x '+fmt(v.b)+' x '+yrs+' / 26'],['Tax-free up to','₹20,00,000']], chart:[0,g], chartBar:true };
+    },
+    '401k-calculator': function(v){
+      var sal=v.sal, bal=v.bal, contribTot=0, pts=[bal];
+      for (var k=0;k<Math.round(v.yr);k++){ var cont = sal*(v.cpc+v.mpc)/100; bal=(bal+cont)*(1+v.ret/100); contribTot+=cont; sal*=1+v.gr/100; pts.push(bal); }
+      return { lbl:'Projected 401(k) at retirement', big:fmt(bal), rows:[['Total contributions',fmt(contribTot+v.bal)],['Investment growth',fmt(bal-contribTot-v.bal)],['Balance','<b>'+fmt(bal)+'</b>']], chart:pts };
+    },
+    'roth-ira-vs-traditional-ira': function(v){
+      var fv=0, yrs=Math.round(v.yr);
+      for (var k=0;k<yrs;k++) fv=(fv+v.c)*(1+v.ret/100);
+      var roth = fv; var trad = fv*(1 - v.tr/100);
+      var win = roth>=trad ? 'Roth IRA' : 'Traditional IRA';
+      return { lbl:'Better after-tax outcome: '+win, big:fmt(Math.max(roth,trad)), rows:[['Roth (tax-free)',fmt(roth)],['Traditional (after '+pctS(v.tr)+' tax)',fmt(trad)],['Difference','<b>'+fmt(Math.abs(roth-trad))+'</b>']], chart:[roth,trad], chartBar:true };
+    },
+    'us-mortgage-piti': function(v){
+      var L=Math.max(v.price-v.down,0), r=v.rate/100/12, nm=Math.round(v.term*12);
+      var pi = r? L*r*Math.pow(1+r,nm)/(Math.pow(1+r,nm)-1) : L/nm;
+      var tax=v.price*v.tax/100/12, ins=v.ins/12, ltv=v.price? L/v.price*100:0, pmi = ltv>80 ? L*v.pmi/100/12 : 0;
+      var total=pi+tax+ins+pmi;
+      return { lbl:'Monthly PITI', big:fmt(total), rows:[['Principal & interest',fmt(pi)],['Property tax',fmt(tax)],['Insurance',fmt(ins)],['PMI',fmt(pmi)],['Total','<b>'+fmt(total)+'</b>']], chart:[pi,tax,ins,pmi], chartBar:true };
+    },
+    'uae-gratuity-calculator': function(v){
+      var daily = v.b/30, yrs = v.y, days;
+      if (yrs < 1) days = 0;
+      else if (yrs <= 5) days = 21*yrs;
+      else days = 21*5 + 30*(yrs-5);
+      var frac = {employer:1, resign35:2/3, resign13:1/3, under1:0}[v.res]; if (frac===undefined) frac=1;
+      var g = Math.min(daily*days*frac, v.b*24);
+      return { lbl:'End of Service Benefit', big:fmt(g), rows:[['Days of pay',Math.round(days*frac)],['Daily pay',fmt(daily)],['Capped at 2 yrs basic',fmt(v.b*24)]], chart:[0,g], chartBar:true };
+    },
+    'uae-vat-calculator': function(v){
+      var vat, net, gross;
+      if (v.dir === 'remove'){ net = v.amt/1.05; vat = v.amt-net; gross = v.amt; }
+      else { net = v.amt; vat = v.amt*0.05; gross = v.amt*1.05; }
+      return { lbl:'Total with VAT', big:fmt(gross), rows:[['Net amount',fmt(net)],['VAT (5%)',fmt(vat)],['Gross','<b>'+fmt(gross)+'</b>']], chart:[net,vat], chartBar:true };
+    }
+  };
+
+  function drawChart(el, data, bar){
+    if (!el || !data || !data.length){ if(el) el.innerHTML=''; return; }
+    var w=300, h=90, max=Math.max.apply(null, data.map(Math.abs)) || 1, n=data.length;
+    var s='';
+    if (bar){
+      var bw = w/n*0.6, gap = w/n;
+      data.forEach(function(d,idx){ var bh = Math.abs(d)/max*(h-10); s += '<rect x="'+(idx*gap+gap*0.2)+'" y="'+(h-bh)+'" width="'+bw+'" height="'+bh+'" fill="#34d399" rx="2"/>'; });
+    } else {
+      var pts = data.map(function(d,idx){ return (idx/(n-1)*w)+','+(h - Math.abs(d)/max*(h-8)); }).join(' ');
+      s = '<polyline points="'+pts+'" fill="none" stroke="#34d399" stroke-width="2.5"/>';
+      s += '<polygon points="0,'+h+' '+pts+' '+w+','+h+'" fill="#34d399" opacity="0.12"/>';
+    }
+    el.innerHTML = s;
+  }
+
+  function run(){
+    var fn = CALC[slug]; if (!fn) return;
+    var res = fn(V());
+    R.querySelector('[data-role=lbl]').textContent = res.lbl || 'Result';
+    R.querySelector('[data-role=big]').textContent = res.big;
+    R.querySelector('[data-role=rows]').innerHTML = (res.rows||[]).map(function(r){ return '<div><span>'+r[0]+'</span><span>'+r[1]+'</span></div>'; }).join('');
+    drawChart(R.querySelector('[data-role=chart]'), res.chart, res.chartBar);
+  }
+  R.addEventListener('input', run); R.addEventListener('change', run);
+  run();
+}());
+<?php
+    return ob_get_clean();
+}
+
+/* ---- SEO ---- */
+function mp_calc_meta() {
+    list($slug) = mp_calc_ctx();
+    if (!$slug) return null;
+    $c = mp_calc_registry()[$slug];
+    $cat = $c['cat'];
+    $catName = $cat ? mp_calc_cats()[$cat] . ' ' : '';
+    return array(
+        'slug' => $slug, 'cat' => $cat, 'title' => $c['title'],
+        'metaTitle' => $c['title'] . ' - Free Online Tool | MoneyPuran',
+        'desc' => wp_strip_all_tags($c['blurb']) . ' Free calculator with the formula, a worked example and a quick-reference table.',
+        'canon' => mp_calc_url($slug, $cat),
+        'c' => $c,
+    );
+}
+add_filter('rank_math/frontend/title', function ($t) { $m = mp_calc_meta(); return $m ? $m['metaTitle'] : $t; }, 12);
+add_filter('pre_get_document_title', function ($t) { $m = mp_calc_meta(); return $m ? $m['metaTitle'] : $t; }, 30);
+add_filter('rank_math/frontend/description', function ($t) { $m = mp_calc_meta(); return $m ? $m['desc'] : $t; }, 12);
+add_filter('rank_math/frontend/canonical', function ($t) { $m = mp_calc_meta(); return $m ? $m['canon'] : $t; }, 12);
+add_filter('the_title', function ($title, $post_id = 0) {
+    if (is_admin() || !in_the_loop() || !is_main_query()) return $title;
+    $m = mp_calc_meta();
+    if ($m && get_post_field('post_name', $post_id) === 'calculators') return $m['title'];
+    return $title;
+}, 12, 2);
+
+add_action('wp_head', function () {
+    $m = mp_calc_meta();
+    if (!$m) return;
+    $c = $m['c'];
+    $app = array('@context' => 'https://schema.org', '@type' => 'WebApplication', 'name' => $c['title'],
+        'url' => $m['canon'], 'applicationCategory' => 'FinanceApplication', 'operatingSystem' => 'Web',
+        'offers' => array('@type' => 'Offer', 'price' => '0', 'priceCurrency' => 'INR'),
+        'description' => wp_strip_all_tags($c['blurb']),
+        'publisher' => array('@type' => 'Organization', 'name' => 'MoneyPuran'));
+    $bc = array('@context' => 'https://schema.org', '@type' => 'BreadcrumbList', 'itemListElement' => array(
+        array('@type' => 'ListItem', 'position' => 1, 'name' => 'Home', 'item' => home_url('/')),
+        array('@type' => 'ListItem', 'position' => 2, 'name' => 'Calculators', 'item' => home_url('/calculators/')),
+        array('@type' => 'ListItem', 'position' => 3, 'name' => $c['title'], 'item' => $m['canon']),
+    ));
+    $faq = array('@context' => 'https://schema.org', '@type' => 'FAQPage', 'mainEntity' => array());
+    foreach ($c['faq'] as $qa) $faq['mainEntity'][] = array('@type' => 'Question', 'name' => wp_strip_all_tags($qa[0]),
+        'acceptedAnswer' => array('@type' => 'Answer', 'text' => wp_strip_all_tags($qa[1])));
+    foreach (array($app, $bc, $faq) as $node) {
+        echo "\n<script type=\"application/ld+json\">" . wp_json_encode($node, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+    }
+}, 3);
+
+/* ---- sitemap ---- */
+add_action('parse_request', function () {
+    $path = isset($_SERVER['REQUEST_URI']) ? trim((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/') : '';
+    if ($path !== 'calculators-sitemap.xml') return;
+    if (!headers_sent()) { status_header(200); header('Content-Type: application/xml; charset=UTF-8', true); header('X-Robots-Tag: noindex', true); }
+    $now = gmdate('c');
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+    echo '  <url><loc>' . esc_url(home_url('/calculators/')) . '</loc><lastmod>' . $now . '</lastmod><priority>0.7</priority></url>' . "\n";
+    foreach (mp_calc_registry() as $sl => $c) {
+        echo '  <url><loc>' . esc_url(mp_calc_url($sl, $c['cat'])) . '</loc><lastmod>' . $now . '</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>' . "\n";
+    }
+    echo '</urlset>';
+    exit;
+}, 0);
+add_filter('robots_txt', function ($o) {
+    if (strpos($o, 'calculators-sitemap.xml') === false) $o .= "\nSitemap: " . home_url('/calculators-sitemap.xml') . "\n";
+    return $o;
+}, 22);
+add_filter('rank_math/sitemap/index', function ($links) {
+    $u = home_url('/calculators-sitemap.xml');
+    if (strpos($links, $u) === false) $links .= '<sitemap><loc>' . esc_url($u) . '</loc><lastmod>' . gmdate('c') . '</lastmod></sitemap>' . "\n";
+    return $links;
+});
+
+/* keep the calculators hub in the quick-tools panel */
+add_filter('mp_quick_tools', function ($t) {
+    if (!isset($t['Calculators'])) $t = array_merge(array('Calculators' => '/calculators/'), $t);
+    return $t;
+});
