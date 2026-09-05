@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.30.1
+ * Version: 1.31.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -6494,7 +6494,7 @@ function mp_comm_cities() {
             'Ahmedabad is a major gold-refining and jewellery-manufacturing centre, so wholesale supply is deep and retail premiums over the reference rate are usually small.'),
     );
 }
-function mp_comm_hub_slugs() { return array('gold' => 'gold-rate', 'silver' => 'silver-rate'); }
+function mp_comm_hub_slugs() { return array('gold' => 'gold-rate', 'silver' => 'silver-rate', 'platinum' => 'platinum-rate'); }
 function mp_comm_metal_from_pagename($name) {
     foreach (mp_comm_hub_slugs() as $metal => $slug) if ($slug === $name) return $metal;
     return '';
@@ -6520,7 +6520,7 @@ function mp_comm_ctx() {
 
 /* 10-day daily history in INR (24K/10g for gold, /kg for silver) from OHLC. */
 function mp_comm_history($metal, $days = 10) {
-    $key = ($metal === 'silver') ? 'silver' : 'gold';
+    $key = ($metal === 'platinum') ? 'platinum' : (($metal === 'silver') ? 'silver' : 'gold');
     $o = mp_candle_ohlc($key, '1D');
     $bars = is_array($o) && !empty($o['bars']) ? $o['bars'] : array();
     if (!$bars) return array();
@@ -6531,8 +6531,9 @@ function mp_comm_history($metal, $days = 10) {
         $close = (float) $b[4];
         $row = array(
             'date'  => gmdate('d M', (int) $b[0]),
+            'iso'   => gmdate('Y-m-d', (int) $b[0]),
             'close' => $close,
-            'delta' => ($prev !== null) ? round($close - $prev, ($metal === 'silver') ? 0 : 0) : null,
+            'delta' => ($prev !== null) ? round($close - $prev) : null,
         );
         $out[] = $row;
         $prev = $close;
@@ -6548,6 +6549,10 @@ function mp_comm_data($metal, $citySlug = '') {
     $memo[$mk] = mp_comm_data_build($metal, $citySlug);
     return $memo[$mk];
 }
+function mp_comm_metal_label($metal) {
+    return $metal === 'silver' ? 'Silver' : ($metal === 'platinum' ? 'Platinum' : 'Gold');
+}
+
 function mp_comm_data_build($metal, $citySlug = '') {
     $rec = $citySlug ? mp_comm_lookup($citySlug) : null;
     $cityDisplay = $rec ? $rec[0] : 'India';
@@ -6561,66 +6566,77 @@ function mp_comm_data_build($metal, $citySlug = '') {
     $b   = is_array($grp) && !empty($grp['bullion_inr']) ? $grp['bullion_inr'] : null;
     if (!$b || empty($b['usdinr']) || empty($b['gold_24k_10g'])) return null;
     $usdinr = (float) $b['usdinr'];
+    $fx = $isIntl ? mp_comm_fx($ccy) : null;
+    $prem = 1 + $premPct / 100;
+    $inMult = (float) apply_filters('mp_gold_india_multiplier', 1.13);
 
-    if ($isIntl) {
-        $fx = mp_comm_fx($ccy);
-        $per10_24 = ($b['gold_24k_10g'] / $usdinr) * $fx;
-        $silverKg = !empty($b['silver_kg']) ? ($b['silver_kg'] / $usdinr) * $fx : null;
-        $scn = function_exists('mp_md_screener_scenario') ? mp_md_screener_scenario() : array();
-        $goldChg   = isset($scn['global']['gold']['chg']) ? $scn['global']['gold']['chg'] : ($b['gold_chg_pct'] ?? null);
-        $silverChg = $b['silver_chg_pct'] ?? null;
-        $noteExtra = ' Shown as the international market rate in ' . $ccy . ', excluding local taxes and dealer premiums.';
-    } else {
-        $gMult = (float) apply_filters('mp_gold_india_multiplier', 1.13) * (1 + $premPct / 100);
-        $sMult = (float) apply_filters('mp_silver_india_multiplier', (float) apply_filters('mp_gold_india_multiplier', 1.13)) * (1 + $premPct / 100);
-        $per10_24 = $b['gold_24k_10g'] * $gMult;
-        $silverKg = !empty($b['silver_kg']) ? $b['silver_kg'] * $sMult : null;
-        $goldChg   = $b['gold_chg_pct'] ?? null;
-        $silverChg = $b['silver_chg_pct'] ?? null;
-        $regs = mp_comm_regions();
-        $noteExtra = ($premPct > 0 && $rec && isset($regs[$rec[3]])) ? ' Includes the approximate ' . $regs[$rec[3]][0] . ' retail premium jewellers apply over the IBJA benchmark.' : '';
-    }
+    $scn = function_exists('mp_md_screener_scenario') ? mp_md_screener_scenario() : array();
 
+    /* ---- base per-10g (999/24K) in the target currency + day change % ---- */
     if ($metal === 'silver') {
-        if (!$silverKg) return null;
-        $perKg = (float) $silverKg;
-        $units = array();
-        foreach (array('1 g' => 1, '10 g' => 10, '100 g' => 100, '1 kg' => 1000) as $lbl => $gr) {
-            $units[$lbl] = round($perKg * $gr / 1000, $gr < 100 ? 2 : $decimals);
-        }
-        $data = array(
-            'metal' => 'silver', 'city' => $cityDisplay, 'citySlug' => $citySlug,
-            'purities' => array('999' => array('label' => '999 (Fine)', 'units' => $units)),
-            'chg_pct' => $silverChg,
-            'per_g' => round($perKg / 1000, 2), 'per_kg' => round($perKg, $decimals),
-        );
-    } else {
-        $purities = array();
-        foreach (array('24k' => array('24K (999)', 1.0), '22k' => array('22K (916)', 0.916), '18k' => array('18K (750)', 0.75)) as $k => $meta) {
-            $per10 = $per10_24 * $meta[1];
-            $purities[$k] = array('label' => $meta[0], 'units' => array(
-                '1 g'   => round($per10 / 10, $decimals),
-                '8 g'   => round($per10 * 0.8, $decimals),
-                '10 g'  => round($per10, $decimals),
-                '100 g' => round($per10 * 10, $decimals),
-            ));
-        }
-        $data = array(
-            'metal' => 'gold', 'city' => $cityDisplay, 'citySlug' => $citySlug,
-            'purities' => $purities,
-            'chg_pct' => $goldChg,
-            'per_g_24k' => round($per10_24 / 10, $decimals), 'per_10g_24k' => round($per10_24, $decimals),
-        );
+        if (empty($b['silver_kg'])) return null;
+        $base10 = $isIntl ? ($b['silver_kg'] / $usdinr) * $fx / 100
+                          : $b['silver_kg'] * $inMult * $prem / 100;   // -> per 10g of 999 silver
+        $metalChg = $isIntl ? ($b['silver_chg_pct'] ?? null) : ($b['silver_chg_pct'] ?? null);
+        $purSpec = array('999' => array('999 (Fine)', 1.0));
+    } elseif ($metal === 'platinum') {
+        $q = function_exists('mp_md_yahoo_one') ? mp_md_yahoo_one('PL=F') : null;
+        $plOz = ($q && !empty($q['price'])) ? (float) $q['price'] : null;
+        if (!$plOz) return null;
+        $pl10gUsd = $plOz / 31.1035 * 10;
+        $base10 = $isIntl ? $pl10gUsd * $fx : $pl10gUsd * $usdinr * $inMult * $prem;
+        $metalChg = isset($q['chgPct']) ? $q['chgPct'] : null;
+        $purSpec = array('999' => array('PT999', 1.0), '950' => array('PT950', 0.95));
+    } else { // gold
+        $base10 = $isIntl ? ($b['gold_24k_10g'] / $usdinr) * $fx : $b['gold_24k_10g'] * $inMult * $prem;
+        $metalChg = $isIntl
+            ? (isset($scn['global']['gold']['chg']) ? $scn['global']['gold']['chg'] : ($b['gold_chg_pct'] ?? null))
+            : ($b['gold_chg_pct'] ?? null);
+        $purSpec = array('24k' => array('24K', 1.0), '22k' => array('22K', 0.916), '18k' => array('18K', 0.75));
     }
-    $data['currency'] = $ccy;
-    $data['symbol']   = $sym;
-    $data['isIntl']   = $isIntl;
-    $data['asOf']     = isset($grp['asOf']) ? $grp['asOf'] : gmdate('c');
-    $data['note']     = 'Indicative reference rate' . ($isIntl ? '' : ' - the international price adjusted for import duty and 3% GST') . '.' . $noteExtra . ' Local jeweller rates vary by making charges and hallmarking; confirm before buying.';
 
-    if (!$isIntl) {
-        // Session high/low from today's intraday (15m) bars, in IST (INR terms).
-        $intra = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '15m');
+    /* ---- purity cards + the detailed weight table ---- */
+    $cards = array(); $purities = array();
+    foreach ($purSpec as $ck => $ps) {
+        $per10 = $base10 * $ps[1];
+        $cards[$ck] = array('label' => $ps[0], 'g' => round($per10 / 10, $decimals), 'ratio' => $ps[1]);
+        $tbLbl = ($metal === 'gold') ? $ps[0] . ' (' . ($ck === '24k' ? '999' : ($ck === '22k' ? '916' : '750')) . ')' : $ps[0];
+        if ($metal === 'silver') {
+            $purities[$ck] = array('label' => '999 (Fine)', 'units' => array(
+                '1 g' => round($per10 / 10, 2), '10 g' => round($per10, 2),
+                '100 g' => round($per10 * 10, $decimals), '1 kg' => round($per10 * 100, $decimals)));
+        } else {
+            $purities[$ck] = array('label' => $tbLbl, 'units' => array(
+                '1 g' => round($per10 / 10, $decimals), '8 g' => round($per10 * 0.8, $decimals),
+                '10 g' => round($per10, $decimals), '100 g' => round($per10 * 10, $decimals)));
+        }
+    }
+
+    $data = array(
+        'metal' => $metal, 'city' => $cityDisplay, 'citySlug' => $citySlug,
+        'purities' => $purities, 'card_prices' => $cards,
+        'chg_pct' => $metalChg,
+        'currency' => $ccy, 'symbol' => $sym, 'isIntl' => $isIntl, 'premiumPct' => $premPct,
+        'asOf' => isset($grp['asOf']) ? $grp['asOf'] : gmdate('c'),
+    );
+    if ($metal === 'silver') {
+        $data['per_g']  = round($base10 / 10, 2);
+        $data['per_kg'] = round($base10 * 100, $decimals);
+    } else {
+        $data['per_g_24k']   = round($base10 / 10, $decimals);
+        $data['per_10g_24k'] = round($base10, $decimals);
+    }
+
+    $regs = mp_comm_regions();
+    $noteExtra = $isIntl
+        ? ' Shown as the international market rate in ' . $ccy . ', excluding local import duty, VAT/GST and dealer premiums (which are significant in some countries).'
+        : (($premPct > 0 && $rec && isset($regs[$rec[3]])) ? ' Includes the approximate ' . $regs[$rec[3]][0] . ' retail premium jewellers apply over the IBJA benchmark.' : '');
+    $data['note'] = 'Indicative reference rate' . ($isIntl ? '' : ' - the international price adjusted for import duty and 3% GST') . '.' . $noteExtra . ' Local jeweller rates vary by making charges and hallmarking; confirm before buying.';
+
+    /* ---- day change (abs), session range, history - INR/local pages only, gold & silver ---- */
+    $ohKey = ($metal === 'silver') ? 'silver' : (($metal === 'platinum') ? 'platinum' : 'gold');
+    if (!$isIntl && $metal !== 'platinum') {
+        $intra = mp_candle_ohlc($ohKey, '15m');
         $ib = is_array($intra) && !empty($intra['bars']) ? $intra['bars'] : array();
         $today = gmdate('Y-m-d', time() + 19800);
         $hi = $lo = null; $nToday = 0;
@@ -6631,25 +6647,34 @@ function mp_comm_data_build($metal, $citySlug = '') {
             if ($bar[3] !== null) $lo = ($lo === null) ? (float) $bar[3] : min($lo, (float) $bar[3]);
         }
         if ($hi !== null && $lo !== null && $nToday >= 3 && $lo > 0 && ($hi - $lo) / $lo > 0.0005) {
-            $prem = 1 + $premPct / 100;
-            $data['day_high'] = ($metal === 'gold') ? $hi * $prem : $hi * $prem;
-            $data['day_low']  = ($metal === 'gold') ? $lo * $prem : $lo * $prem;
+            $data['day_high'] = $hi * $prem;
+            $data['day_low']  = $lo * $prem;
             $data['ref_unit'] = ($metal === 'silver') ? 'per kg' : 'per 10g, 24K';
         }
-        $daily = mp_candle_ohlc(($metal === 'silver') ? 'silver' : 'gold', '1D');
+        $daily = mp_candle_ohlc($ohKey, '1D');
         $db = is_array($daily) && !empty($daily['bars']) ? $daily['bars'] : array();
-        if (count($db) > 1) {
-            $data['day_chg_abs'] = round($db[count($db) - 1][4] - $db[count($db) - 2][4]);
+        if (count($db) > 1) $data['day_chg_abs'] = round($db[count($db) - 1][4] - $db[count($db) - 2][4]);
+
+        $hist = mp_comm_history($metal, 30);
+        foreach ($hist as &$hh) {
+            if ($premPct > 0) {
+                $hh['close'] = round($hh['close'] * $prem);
+                if ($hh['delta'] !== null) $hh['delta'] = round($hh['delta'] * $prem);
+            }
+            $hh['g'] = ($metal === 'silver') ? round($hh['close'] / 1000, 2) : round($hh['close'] / 10);
         }
-        $hist = mp_comm_history($metal, 10);
-        if ($premPct > 0) {
-            foreach ($hist as &$hh) { $hh['close'] = round($hh['close'] * (1 + $premPct / 100)); if ($hh['delta'] !== null) $hh['delta'] = round($hh['delta'] * (1 + $premPct / 100)); }
-            unset($hh);
-        }
-        $data['history'] = $hist;
+        unset($hh);
+        $data['history']   = array_slice($hist, -10);
+        $data['history30'] = $hist;
     } else {
-        $data['history'] = array();
+        $data['history']   = array();
+        $data['history30'] = array();
+        if ($metalChg !== null && !empty($data[($metal === 'silver') ? 'per_kg' : 'per_10g_24k'])) {
+            $ref = ($metal === 'silver') ? $data['per_kg'] : $data['per_10g_24k'];
+            $data['day_chg_abs'] = round(($ref - $ref / (1 + $metalChg / 100)));
+        }
     }
+
     $data['cityNote']  = $rec ? $rec[4] : '';
     $data['cityState'] = $rec ? $rec[2] : '';
     $data['region']    = ($rec && $rec[1] === 'in') ? $rec[3] : '';
@@ -6659,7 +6684,7 @@ function mp_comm_data_build($metal, $citySlug = '') {
 
 /* ---- FAQ (targets featured snippets) ---------------------------------- */
 function mp_comm_faq($metal, $citySlug = '') {
-    $M  = ($metal === 'silver') ? 'silver' : 'gold';
+    $M  = strtolower(mp_comm_metal_label($metal));
     $rec = $citySlug ? mp_comm_lookup($citySlug) : null;
     $cityDisplay = $rec ? $rec[0] : 'India';
     $isIntl = $rec && $rec[1] === 'intl';
@@ -6707,9 +6732,9 @@ function mp_comm_faq($metal, $citySlug = '') {
 add_shortcode('mp_commodity_page', function ($atts) {
     $atts = shortcode_atts(array('metal' => 'gold'), $atts, 'mp_commodity_page');
     list($ctxMetal, $citySlug, $cityDisplay) = mp_comm_ctx();
-    $metal = $ctxMetal ?: (in_array($atts['metal'], array('gold', 'silver'), true) ? $atts['metal'] : 'gold');
+    $metal = $ctxMetal ?: (in_array($atts['metal'], array('gold', 'silver', 'platinum'), true) ? $atts['metal'] : 'gold');
     $d = mp_comm_data($metal, $citySlug);
-    $M = ($metal === 'silver') ? 'Silver' : 'Gold';
+    $M = mp_comm_metal_label($metal);
     $whereLabel = ($cityDisplay ?: 'India');
 
     if (!$d) return '<p>' . esc_html($M) . ' rate data is loading — please refresh in a moment.</p>';
@@ -6723,52 +6748,125 @@ add_shortcode('mp_commodity_page', function ($atts) {
     ob_start(); ?>
 <div class="mp-comm" data-metal="<?php echo esc_attr($metal); ?>" data-hub="<?php echo esc_attr($hub); ?>" data-city="<?php echo esc_attr($citySlug); ?>">
 
-  <?php /* city switcher */ ?>
-  <nav class="mp-comm__cities" aria-label="Choose city">
-    <a href="<?php echo esc_url(home_url('/' . $hub . '/')); ?>"<?php echo $citySlug ? '' : ' class="on"'; ?>>India</a>
-    <?php foreach ($featured as $sl => $meta) : ?>
-      <a href="<?php echo esc_url(home_url('/' . $hub . '/' . $sl . '/')); ?>"<?php echo $sl === $citySlug ? ' class="on"' : ''; ?>><?php echo esc_html($meta[0]); ?></a>
-    <?php endforeach; ?>
-    <button type="button" class="mp-comm__more" data-role="citybtn">More cities &amp; countries</button>
-  </nav>
+  <?php /* ---- top bar: date | metal toggle | location ---- */ ?>
+  <div class="mp-comm__bar">
+    <?php if (!empty($d['history30'])) : ?>
+    <label class="mp-comm__date">
+      <span class="mp-comm__cal" aria-hidden="true">&#128197;</span>
+      <input type="date" data-role="datepick" value="<?php echo esc_attr(gmdate('Y-m-d', time() + 19800)); ?>"
+             min="<?php echo esc_attr(gmdate('Y-m-d', time() + 19800 - 40 * 86400)); ?>"
+             max="<?php echo esc_attr(gmdate('Y-m-d', time() + 19800)); ?>">
+    </label>
+    <?php else : ?>
+    <span class="mp-comm__date"><span class="mp-comm__cal" aria-hidden="true">&#128197;</span> <span data-live-datetime="date"><?php echo esc_html(gmdate('j M Y', time() + 19800)); ?></span></span>
+    <?php endif; ?>
+    <div class="mp-comm__metals" role="tablist">
+      <?php foreach (mp_comm_hub_slugs() as $mk => $ms) : ?>
+        <a href="<?php echo esc_url(home_url('/' . $ms . '/' . ($citySlug ? $citySlug . '/' : ''))); ?>"
+           class="<?php echo $mk === $metal ? 'on' : ''; ?>"><?php echo esc_html(mp_comm_metal_label($mk)); ?></a>
+      <?php endforeach; ?>
+    </div>
+    <button type="button" class="mp-comm__loc" data-role="citybtn">
+      <span data-role="locname"><?php echo esc_html($whereLabel); ?></span> <span aria-hidden="true">&#9662;</span>
+    </button>
+  </div>
   <p class="mp-comm__geo" data-role="geo" hidden></p>
 
   <div class="mp-comm__modal" data-role="citymodal" hidden>
-    <div class="mp-comm__modal-box" role="dialog" aria-label="Select your city">
+    <div class="mp-comm__modal-box" role="dialog" aria-label="Select your location">
       <div class="mp-comm__modal-head">
-        <strong>Select your city</strong>
+        <strong>Select your location</strong>
         <button type="button" data-role="cityclose" aria-label="Close">&times;</button>
       </div>
-      <input type="search" data-role="citysearch" placeholder="Search your city or country" autocomplete="off">
+      <input type="search" data-role="citysearch" placeholder="Search city or country" autocomplete="off">
       <ul class="mp-comm__modal-list" data-role="citylist"></ul>
     </div>
   </div>
 
-  <?php /* headline + day movement */ ?>
-  <?php $chg = $d['chg_pct']; $dir = ($chg === null) ? 'flat' : ($chg > 0.02 ? 'up' : ($chg < -0.02 ? 'dn' : 'flat')); ?>
-  <div class="mp-comm__head mp-comm--<?php echo $dir; ?>">
-    <div class="mp-comm__price">
-      <?php if ($metal === 'silver') : ?>
-        <strong><?php echo $SY; ?><?php echo number_format($d['per_kg'], $DEC); ?></strong><span>/kg &middot; 999 fine</span>
-      <?php else : ?>
-        <strong><?php echo $SY; ?><?php echo number_format($d['per_g_24k'], $DEC); ?></strong><span>/gram &middot; 24K</span>
+  <?php
+    /* build the purity cards from $d['purities'] - abs day change per gram */
+    $chg   = $d['chg_pct'];
+    $absG  = isset($d['day_chg_abs']) ? ($d['day_chg_abs'] / 10) * (1 + ($d['premiumPct'] ?? 0) / 100) : null;
+    $mlab  = mp_comm_metal_label($metal);
+  ?>
+  <div class="mp-comm__cards" data-role="cards"
+       data-live='<?php echo esc_attr(wp_json_encode($d['card_prices'])); ?>'
+       data-hist='<?php echo esc_attr(wp_json_encode($d['history30'] ?? array())); ?>'>
+    <?php foreach ($d['card_prices'] as $ck => $cp) : ?>
+      <div class="mp-comm__card">
+        <span class="mp-comm__card-lbl"><?php echo esc_html($cp['label']); ?> <?php echo esc_html($mlab); ?> /g</span>
+        <div class="mp-comm__card-row">
+          <strong data-role="cp-<?php echo esc_attr($ck); ?>"><?php echo $SY; ?><?php echo number_format($cp['g'], $DEC); ?></strong>
+          <?php if ($chg !== null) : ?>
+          <span class="mp-comm__card-chg <?php echo $chg > 0.02 ? 'up' : ($chg < -0.02 ? 'dn' : 'flat'); ?>" data-role="cc-<?php echo esc_attr($ck); ?>">
+            <?php echo $chg > 0.02 ? '&#9650;' : ($chg < -0.02 ? '&#9660;' : '&bull;'); ?>
+            <?php echo $absG !== null ? $SY . number_format(abs($absG * $cp['ratio']), $DEC ? 2 : 0) : number_format(abs($chg), 2) . '%'; ?>
+          </span>
+          <?php endif; ?>
+        </div>
+      </div>
+    <?php endforeach; ?>
+  </div>
+  <p class="mp-comm__asof">
+    <span data-role="asoflabel">Updated <span data-live-datetime="datetime"><?php echo esc_html(date('j M Y, H:i', strtotime($d['asOf']))); ?></span></span>
+    &middot; indicative reference<?php echo $d['isIntl'] ? ' &middot; ' . esc_html($d['currency']) : ''; ?>
+    <?php if (!empty($d['day_high'])) : ?><span class="mp-comm__hl">&middot; day range <?php echo $SY; ?><?php echo number_format($d['day_low'], $DEC); ?>&ndash;<?php echo $SY; ?><?php echo number_format($d['day_high'], $DEC); ?> <?php echo esc_html($d['ref_unit']); ?></span><?php endif; ?>
+  </p>
+
+  <?php /* ---- calculator ---- */ ?>
+  <h2>Calculator</h2>
+  <div class="mp-comm__calc" data-sym="<?php echo esc_attr(html_entity_decode($SY)); ?>" data-dec="<?php echo (int) $DEC; ?>" data-gst="<?php echo $d['isIntl'] ? '0' : '1'; ?>"
+       data-per-g="<?php echo esc_attr($metal === 'silver' ? $d['per_g'] : $d['per_g_24k']); ?>"
+       data-per-g-22="<?php echo esc_attr(isset($d['card_prices']['22k']) ? $d['card_prices']['22k']['g'] : ''); ?>"
+       data-per-g-18="<?php echo esc_attr(isset($d['card_prices']['18k']) ? $d['card_prices']['18k']['g'] : ''); ?>"
+       data-per-g-950="<?php echo esc_attr(isset($d['card_prices']['950']) ? $d['card_prices']['950']['g'] : ''); ?>">
+    <div class="mp-comm__calc-in">
+      <?php if (count($d['card_prices']) > 1) : ?>
+      <div class="mp-comm__field"><label>Purity</label>
+        <span class="mp-comm__seg" data-role="pty">
+          <?php $first = true; foreach ($d['card_prices'] as $ck => $cp) : ?>
+            <button type="button" data-p="<?php echo esc_attr($ck); ?>"<?php echo $first ? ' class="on"' : ''; ?>><?php echo esc_html($cp['label']); ?></button>
+          <?php $first = false; endforeach; ?>
+        </span>
+      </div>
+      <?php endif; ?>
+      <div class="mp-comm__field"><label>Weight (gm)</label><input type="number" data-role="wt" value="10" min="0" step="0.1"></div>
+      <div class="mp-comm__field"><label>Making (%)</label><input type="number" data-role="mk" value="12" min="0" step="1"></div>
+      <?php if (!$d['isIntl']) : ?>
+      <div class="mp-comm__field"><label>GST</label>
+        <select data-role="gst"><option value="1">Incl. 3%</option><option value="0">Exclude</option></select>
+      </div>
       <?php endif; ?>
     </div>
-    <div class="mp-comm__move">
-      <?php if ($chg !== null) : ?>
-        <span class="mp-comm__chg <?php echo $dir; ?>"><?php echo $chg > 0 ? '&#9650; +' : ($chg < 0 ? '&#9660; ' : '&bull; '); ?><?php echo number_format($chg, 2); ?>% today</span>
-      <?php endif; ?>
-      <?php if (!empty($d['day_high'])) : ?>
-        <span class="mp-comm__hl">Day range &#8377;<?php echo number_format($d['day_low']); ?> &ndash; &#8377;<?php echo number_format($d['day_high']); ?> <small><?php echo esc_html($d['ref_unit']); ?></small></span>
-      <?php endif; ?>
+
+    <div class="mp-comm__calc-res">
+      <div class="mp-comm__calc-break">
+        <div><span>Base value</span><span data-role="o-base"><?php echo $SY; ?>0</span></div>
+        <div><span>Making charges</span><span data-role="o-make"><?php echo $SY; ?>0</span></div>
+        <?php if (!$d['isIntl']) : ?><div><span>GST (3%)</span><span data-role="o-gst"><?php echo $SY; ?>0</span></div><?php endif; ?>
+      </div>
+      <div class="mp-comm__calc-total">
+        <span>Total Amount</span>
+        <strong data-role="o-tot"><?php echo $SY; ?>0</strong>
+        <small><?php echo $d['isIntl'] ? 'Metal + making' : 'Incl. all charges'; ?></small>
+      </div>
+      <div class="mp-comm__calc-worth">
+        <strong>Know your money&rsquo;s worth!</strong>
+        <p>Enter any amount to see how much <?php echo esc_html(strtolower($mlab)); ?> you can get</p>
+        <div class="mp-comm__worth-row">
+          <input type="number" data-role="amt" placeholder="10000" min="0" step="100">
+          <button type="button" data-role="amtgo">Try now</button>
+        </div>
+        <p class="mp-comm__worth-out" data-role="amt-out"></p>
+      </div>
     </div>
-    <div class="mp-comm__asof">Updated <span data-live-datetime="datetime"><?php echo esc_html(date('j M Y, H:i', strtotime($d['asOf']))); ?></span> &middot; indicative</div>
   </div>
 
-  <?php /* price table */ ?>
+  <?php /* detailed rates by weight */ ?>
+  <h2>Detailed <?php echo esc_html(strtolower($mlab)); ?> rates<?php echo $cityDisplay && $cityDisplay !== 'India' ? ' in ' . esc_html($cityDisplay) : ''; ?></h2>
   <div class="mp-comm__tablewrap">
   <table class="mp-comm__table">
-    <thead><tr><th>Purity</th><th>1 g</th><?php echo $metal === 'gold' ? '<th>8 g</th>' : ''; ?><th>10 g</th><th>100 g</th><?php echo $metal === 'silver' ? '<th>1 kg</th>' : ''; ?></tr></thead>
+    <thead><tr><th>Purity</th><th>1 g</th><?php echo $metal !== 'silver' ? '<th>8 g</th>' : ''; ?><th>10 g</th><th>100 g</th><?php echo $metal === 'silver' ? '<th>1 kg</th>' : ''; ?></tr></thead>
     <tbody>
       <?php foreach ($d['purities'] as $pk => $p) : ?>
         <tr>
@@ -6781,52 +6879,26 @@ add_shortcode('mp_commodity_page', function ($atts) {
     </tbody>
   </table>
   </div>
-  <p class="mp-comm__tnote">Figures are the metal value only &mdash; jeweller making charges (typically 8&ndash;25%) and 3% GST are added on top. Use the calculator below for a billed estimate.</p>
+  <p class="mp-comm__tnote">Figures are the metal value only &mdash; jeweller making charges<?php echo $d['isIntl'] ? '' : ' and 3% GST'; ?> are added on top.</p>
 
   <?php /* 10-day history */ ?>
   <?php if (!empty($d['history'])) : ?>
-  <h2>10-day <?php echo esc_html(strtolower($M)); ?> price trend<?php echo $cityDisplay ? ' &mdash; ' . esc_html($cityDisplay) : ''; ?></h2>
+  <h2>10-day <?php echo esc_html(strtolower($mlab)); ?> price trend<?php echo $cityDisplay && $cityDisplay !== 'India' ? ' &mdash; ' . esc_html($cityDisplay) : ''; ?></h2>
   <div class="mp-comm__tablewrap">
   <table class="mp-comm__table mp-comm__hist">
-    <thead><tr><th>Date</th><th><?php echo $metal === 'silver' ? '999 close / kg' : '24K close / 10 g'; ?></th><th>Change</th></tr></thead>
+    <thead><tr><th>Date</th><th><?php echo $metal === 'silver' ? '999 close / kg' : (($metal === 'platinum' ? 'PT999' : '24K') . ' close / 10 g'); ?></th><th>Change</th></tr></thead>
     <tbody>
       <?php foreach (array_reverse($d['history']) as $h) : $dd = $h['delta']; ?>
         <tr>
           <td><?php echo esc_html($h['date']); ?></td>
-          <td>&#8377;<?php echo number_format($h['close']); ?></td>
-          <td class="<?php echo $dd === null ? '' : ($dd > 0 ? 'up' : ($dd < 0 ? 'dn' : '')); ?>"><?php echo $dd === null ? '&mdash;' : (($dd > 0 ? '+&#8377;' : '&minus;&#8377;') . number_format(abs($dd))); ?></td>
+          <td><?php echo $SY; ?><?php echo number_format($h['close']); ?></td>
+          <td class="<?php echo $dd === null ? '' : ($dd > 0 ? 'up' : ($dd < 0 ? 'dn' : '')); ?>"><?php echo $dd === null ? '&mdash;' : (($dd > 0 ? '+' . $SY : '&minus;' . $SY) . number_format(abs($dd))); ?></td>
         </tr>
       <?php endforeach; ?>
     </tbody>
   </table>
   </div>
   <?php endif; ?>
-
-  <?php /* calculator */ ?>
-  <h2><?php echo esc_html($M); ?> price calculator &mdash; making charges<?php echo $d['isIntl'] ? '' : ' &amp; GST'; ?></h2>
-  <div class="mp-comm__calc" data-sym="<?php echo esc_attr(html_entity_decode($SY)); ?>" data-dec="<?php echo (int) $DEC; ?>" data-gst="<?php echo $d['isIntl'] ? '0' : '1'; ?>"
-       data-per-g="<?php echo esc_attr($metal === 'silver' ? $d['per_g'] : $d['per_g_24k']); ?>"
-       data-per-g-22="<?php echo esc_attr($metal === 'gold' ? round($d['per_g_24k'] * 0.916, $DEC) : ''); ?>"
-       data-per-g-18="<?php echo esc_attr($metal === 'gold' ? round($d['per_g_24k'] * 0.75, $DEC) : ''); ?>">
-    <div class="mp-comm__calc-in">
-      <?php if ($metal === 'gold') : ?>
-      <label>Purity
-        <select data-role="pty"><option value="g">24K</option><option value="g22">22K</option><option value="g18">18K</option></select>
-      </label>
-      <?php endif; ?>
-      <label>Weight (grams)<input type="number" data-role="wt" value="10" min="0" step="0.1"></label>
-      <label>Making charges (%)<input type="number" data-role="mk" value="12" min="0" step="1"></label>
-      <label>Hallmark / certification<input type="number" data-role="hm" value="<?php echo $d['isIntl'] ? '0' : '45'; ?>" min="0" step="5"></label>
-      <?php if (!$d['isIntl']) : ?><label>GST<select data-role="gst"><option value="1">Include 3%</option><option value="0">Exclude</option></select></label><?php endif; ?>
-    </div>
-    <div class="mp-comm__calc-out">
-      <div><span>Base metal value</span><span data-role="o-base"><?php echo $SY; ?>0</span></div>
-      <div><span>Making charges</span><span data-role="o-make"><?php echo $SY; ?>0</span></div>
-      <div><span>Hallmark charge</span><span data-role="o-hm"><?php echo $SY; ?>0</span></div>
-      <?php if (!$d['isIntl']) : ?><div><span>GST (3%)</span><span data-role="o-gst"><?php echo $SY; ?>0</span></div><?php endif; ?>
-      <div class="tot"><span>Total payable</span><span data-role="o-tot"><?php echo $SY; ?>0</span></div>
-    </div>
-  </div>
 
   <?php /* city context */ ?>
   <h2><?php echo $citySlug ? esc_html($M) . ' rate in ' . esc_html($whereLabel) . ' &mdash; local context' : 'How the ' . esc_html(strtolower($M)) . ' rate in India is set'; ?></h2>
@@ -6866,37 +6938,82 @@ add_shortcode('mp_commodity_page', function ($atts) {
 (function(){
   var ROOT = document.currentScript.closest('.mp-comm') || document.querySelector('.mp-comm');
   if (!ROOT) return;
+  var metal = ROOT.getAttribute('data-metal') || 'gold';
+  var hub   = ROOT.getAttribute('data-hub') || 'gold-rate';
   function n(s){ return parseFloat(String(s).replace(/[^0-9.]/g,'')) || 0; }
 
-  /* --- calculator (currency-aware) --- */
-  function wire(C){
-    var sym = C.getAttribute('data-sym') || '₹';
-    var dec = parseInt(C.getAttribute('data-dec'),10) || 0;
+  var C = ROOT.querySelector('.mp-comm__calc');
+  var SYM = C ? (C.getAttribute('data-sym') || '₹') : '₹';
+  var DEC = C ? (parseInt(C.getAttribute('data-dec'),10) || 0) : 0;
+  function money(x){ return SYM + Number(x).toLocaleString(DEC ? 'en-US' : 'en-IN', {minimumFractionDigits:DEC, maximumFractionDigits:DEC}); }
+
+  /* ---- calculator ---- */
+  if (C) {
     var gstOn = C.getAttribute('data-gst') === '1';
-    function money(x){ return sym + Number(x).toLocaleString(dec ? 'en-US' : 'en-IN', {minimumFractionDigits:dec, maximumFractionDigits:dec}); }
+    var seg = C.querySelector('[data-role=pty]');
+    function activeP(){
+      var b = seg && seg.querySelector('button.on');
+      return b ? b.getAttribute('data-p') : (metal === 'gold' ? '24k' : '999');
+    }
     function perG(){
-      var sel = C.querySelector('[data-role=pty]');
-      if (sel && sel.value === 'g22') return n(C.getAttribute('data-per-g-22'));
-      if (sel && sel.value === 'g18') return n(C.getAttribute('data-per-g-18'));
+      var p = activeP();
+      if (p === '22k') return n(C.getAttribute('data-per-g-22'));
+      if (p === '18k') return n(C.getAttribute('data-per-g-18'));
+      if (p === '950') return n(C.getAttribute('data-per-g-950'));
       return n(C.getAttribute('data-per-g'));
     }
     function calc(){
       var wt = n((C.querySelector('[data-role=wt]')||{}).value),
           mk = n((C.querySelector('[data-role=mk]')||{}).value),
-          hm = n((C.querySelector('[data-role=hm]')||{}).value),
           gEl = C.querySelector('[data-role=gst]'),
           gInc = gstOn && (!gEl || gEl.value === '1');
-      var base = perG()*wt, make = base*mk/100, sub = base+make+hm, gst = gInc ? sub*0.03 : 0;
+      var base = perG()*wt, make = base*mk/100, sub = base+make, gst = gInc ? sub*0.03 : 0;
       var set = function(r,v){ var el=C.querySelector('[data-role='+r+']'); if(el) el.textContent=money(v); };
-      set('o-base',base); set('o-make',make); set('o-hm',hm); set('o-gst',gst); set('o-tot',sub+gst);
+      set('o-base',base); set('o-make',make); set('o-gst',gst); set('o-tot',sub+gst);
+      var amt = n((C.querySelector('[data-role=amt]')||{}).value);
+      var eff = perG()*(1+mk/100)*(gInc?1.03:1);
+      var out = C.querySelector('[data-role=amt-out]');
+      if (out) out.textContent = (amt && eff) ? ('≈ ' + (amt/eff).toFixed(3) + ' g of ' + activeP().toUpperCase()) : '';
     }
-    C.addEventListener('input', calc); C.addEventListener('change', calc); calc();
+    if (seg) seg.addEventListener('click', function(e){
+      var b = e.target.closest('button'); if(!b) return;
+      seg.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+      b.classList.add('on'); calc();
+    });
+    C.addEventListener('input', calc); C.addEventListener('change', calc);
+    var go = C.querySelector('[data-role=amtgo]'); if (go) go.addEventListener('click', calc);
+    calc();
   }
-  var cl = ROOT.querySelectorAll('.mp-comm__calc');
-  for (var i=0;i<cl.length;i++) wire(cl[i]);
 
-  /* --- city modal + search --- */
-  var hub = ROOT.getAttribute('data-hub') || 'gold-rate';
+  /* ---- historical date picker: repaint the cards from the 30-day series ---- */
+  var cardsWrap = ROOT.querySelector('[data-role=cards]');
+  var dp = ROOT.querySelector('[data-role=datepick]');
+  var live = {}, hist = [];
+  try { live = JSON.parse(cardsWrap.getAttribute('data-live')) || {}; } catch(e){}
+  try { hist = JSON.parse(cardsWrap.getAttribute('data-hist')) || []; } catch(e){}
+  var liveArr = Object.keys(live).map(function(k){ return {k:k, o:live[k]}; });
+  var todayVal = dp ? dp.value : '';
+  function setCard(k, txt){ var el = cardsWrap.querySelector('[data-role=cp-'+k+']'); if (el) el.textContent = txt; }
+  function showChg(on){ liveArr.forEach(function(x){ var cc = cardsWrap.querySelector('[data-role=cc-'+x.k+']'); if(cc) cc.style.display = on ? '' : 'none'; }); }
+  function label(t){ var al = ROOT.querySelector('[data-role=asoflabel]'); if (al) al.textContent = t; }
+  if (dp && hist.length && liveArr.length) {
+    dp.addEventListener('change', function(){
+      if (!dp.value || dp.value >= todayVal) {
+        liveArr.forEach(function(x){ setCard(x.k, money(x.o.g)); });
+        showChg(true); label('Live rate');
+        return;
+      }
+      var row = null;
+      for (var i = hist.length - 1; i >= 0; i--) { if (hist[i].iso <= dp.value) { row = hist[i]; break; } }
+      if (!row) row = hist[0];
+      liveArr.forEach(function(x){ setCard(x.k, money(row.g * x.o.ratio)); });
+      showChg(false); label('Historical close · ' + row.date);
+    });
+  } else if (dp) {
+    dp.disabled = true;
+  }
+
+  /* ---- location modal + search ---- */
   var modal = ROOT.querySelector('[data-role=citymodal]');
   var listEl = ROOT.querySelector('[data-role=citylist]');
   var search = ROOT.querySelector('[data-role=citysearch]');
@@ -6904,31 +7021,35 @@ add_shortcode('mp_commodity_page', function ($atts) {
   try { data = JSON.parse((document.querySelector('[data-role=citydata]')||{}).textContent) || []; } catch(e){}
   function render(q){
     q = (q||'').trim().toLowerCase();
-    var rows = data.filter(function(c){ return !q || (c.n+' '+c.s).toLowerCase().indexOf(q) > -1; }).slice(0, 60);
+    var rows = data.filter(function(c){ return !q || (c.n+' '+c.s).toLowerCase().indexOf(q) > -1; }).slice(0, 80);
     listEl.innerHTML = rows.map(function(c){
       return '<li><a href="/'+hub+'/'+c.k+'/">'+c.n+' <span>'+c.s+'</span></a></li>';
     }).join('') || '<li class="mp-comm__modal-none">No match &mdash; showing the India rate</li>';
   }
-  function open(){ if(!modal) return; modal.hidden=false; render(''); if(search){ search.value=''; search.focus(); } }
-  function close(){ if(modal) modal.hidden=true; }
+  function openM(){ if(!modal) return; modal.hidden=false; render(''); if(search){ search.value=''; search.focus(); } }
+  function closeM(){ if(modal) modal.hidden=true; }
   var btn = ROOT.querySelector('[data-role=citybtn]');
-  if (btn) btn.addEventListener('click', open);
+  if (btn) btn.addEventListener('click', openM);
   var x = ROOT.querySelector('[data-role=cityclose]');
-  if (x) x.addEventListener('click', close);
-  if (modal) modal.addEventListener('click', function(e){ if(e.target===modal) close(); });
+  if (x) x.addEventListener('click', closeM);
+  if (modal) modal.addEventListener('click', function(e){ if(e.target===modal) closeM(); });
   if (search) search.addEventListener('input', function(){ render(this.value); });
-  document.addEventListener('keydown', function(e){ if(e.key==='Escape') close(); });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeM(); });
 
-  /* --- geolocation hint (no redirect - SEO safe) --- */
+  /* ---- geolocation hint (no redirect - SEO safe) ---- */
   var geo = ROOT.querySelector('[data-role=geo]');
   if (geo && !ROOT.getAttribute('data-city')) {
     try {
       fetch('https://ipapi.co/json/').then(function(r){return r.json();}).then(function(j){
         var city = (j && (j.city||'')).toLowerCase().replace(/[^a-z]/g,'');
-        if (!city) return;
-        var hit = data.find(function(c){ return c.k.replace(/-/g,'') === city || c.n.toLowerCase().replace(/[^a-z]/g,'') === city; });
+        var ctry = (j && (j.country_name||'')).toLowerCase().replace(/[^a-z]/g,'');
+        if (!city && !ctry) return;
+        var hit = data.find(function(c){
+          var kk = c.k.replace(/-/g,''), nn = c.n.toLowerCase().replace(/[^a-z]/g,'');
+          return kk === city || nn === city || kk === ctry || nn === ctry;
+        });
         if (hit && location.pathname.indexOf('/'+hit.k+'/') === -1) {
-          geo.innerHTML = '📍 Your area looks like <strong>'+hit.n+'</strong> &mdash; <a href="/'+hub+'/'+hit.k+'/">see '+hit.n+' rates</a>';
+          geo.innerHTML = '📍 Detected <strong>'+hit.n+'</strong> &mdash; <a href="/'+hub+'/'+hit.k+'/">see '+hit.n+' '+metal+' rates</a>';
           geo.hidden = false;
         }
       }).catch(function(){});
@@ -6954,9 +7075,9 @@ add_action('init', function () {
     foreach (mp_comm_hub_slugs() as $slug) {
         add_rewrite_rule('^' . $slug . '/([a-z][a-z-]+)/?$', 'index.php?pagename=' . $slug . '&mp_city=$matches[1]', 'top');
     }
-    if (get_option('mp_comm_rw_v') !== '2') {
+    if (get_option('mp_comm_rw_v') !== '3') {
         flush_rewrite_rules(false);
-        update_option('mp_comm_rw_v', '2');
+        update_option('mp_comm_rw_v', '3');
     }
 }, 20);
 add_filter('query_vars', function ($v) { $v[] = 'mp_city'; return $v; });
@@ -7002,21 +7123,23 @@ add_action('template_redirect', function () {
 function mp_comm_titles() {
     list($metal, $citySlug, $cityDisplay) = mp_comm_ctx();
     if (!$metal) return null;
-    $M = ($metal === 'silver') ? 'Silver' : 'Gold';
+    $M = mp_comm_metal_label($metal);
     $where = $cityDisplay ? (' in ' . $cityDisplay) : ' in India';
+    $place = $cityDisplay ?: 'India';
     $h1 = $M . ' Rate Today' . $where;
     if ($metal === 'silver') {
-        $title = $citySlug
-            ? 'Silver Rate Today in ' . $cityDisplay . ' | 999 Silver Price per Gram & Kg | MoneyPuran'
-            : 'Silver Rate Today in India | 999 Silver Price per Gram, 10g & Kg | MoneyPuran';
+        $title = 'Silver Rate Today in ' . $place . ' | 999 Silver Price per Gram' . ($citySlug ? ' & Kg' : ', 10g & Kg') . ' | MoneyPuran';
+    } elseif ($metal === 'platinum') {
+        $title = 'Platinum Rate Today in ' . $place . ' | PT999 & PT950 Platinum Price per Gram | MoneyPuran';
     } else {
-        $title = $citySlug
-            ? 'Gold Rate Today in ' . $cityDisplay . ' | 22K & 24K Gold Price | MoneyPuran'
-            : 'Gold Rate Today in India | 24K, 22K & 18K Gold Price | MoneyPuran';
+        $title = 'Gold Rate Today in ' . $place . ' | ' . ($citySlug ? '22K & 24K' : '24K, 22K & 18K') . ' Gold Price | MoneyPuran';
     }
-    $desc = ($metal === 'silver')
-        ? 'Today\'s indicative silver rate' . $where . ' - 999 fine silver price per gram, 10g, 100g and per kg, with a 10-day trend, GST and making-charge calculator and FAQs. Updated through the day.'
-        : 'Today\'s indicative gold rate' . $where . ' - 24K, 22K and 18K price per gram, 8g, 10g and 100g, with a 10-day trend, GST and making-charge calculator and FAQs. Updated through the day.';
+    $ml = strtolower($M);
+    $desc = 'Today\'s indicative ' . $ml . ' rate' . $where . ' - '
+        . ($metal === 'silver' ? '999 fine silver price per gram, 10g, 100g and per kg'
+          : ($metal === 'platinum' ? 'PT999 and PT950 platinum price per gram, 10g and 100g'
+            : '24K, 22K and 18K price per gram, 8g, 10g and 100g'))
+        . ', with a price trend, calculator and FAQs. Updated through the day.';
     $canon = home_url('/' . mp_comm_hub_slugs()[$metal] . '/' . ($citySlug ? $citySlug . '/' : ''));
     return compact('metal', 'citySlug', 'cityDisplay', 'h1', 'title', 'desc', 'canon', 'M');
 }
@@ -7134,13 +7257,14 @@ add_filter('wp_robots', function ($robots) {
     return $robots;
 }, 20);
 
-/* ---- ensure the two hub pages exist ---------------------------------- */
+/* ---- ensure the hub pages exist ------------------------------------- */
 add_action('init', function () {
-    if (get_option('mp_comm_pages_v') === '1') return;
+    if (get_option('mp_comm_pages_v') === '2') return;
     if (wp_doing_ajax() || wp_doing_cron() || (defined('REST_REQUEST') && REST_REQUEST)) return;
     foreach (array(
-        'gold-rate'   => array('Gold Rate Today in India', '[mp_commodity_page metal="gold"]'),
-        'silver-rate' => array('Silver Rate Today in India', '[mp_commodity_page metal="silver"]'),
+        'gold-rate'     => array('Gold Rate Today in India', '[mp_commodity_page metal="gold"]'),
+        'silver-rate'   => array('Silver Rate Today in India', '[mp_commodity_page metal="silver"]'),
+        'platinum-rate' => array('Platinum Rate Today in India', '[mp_commodity_page metal="platinum"]'),
     ) as $slug => $meta) {
         $existing = get_page_by_path($slug);
         if ($existing) {
@@ -7152,9 +7276,11 @@ add_action('init', function () {
         wp_insert_post(array(
             'post_type' => 'page', 'post_status' => 'publish',
             'post_title' => $meta[0], 'post_name' => $slug, 'post_content' => $meta[1],
+            'post_author' => function_exists('mp_eeat_user_id') ? (mp_eeat_user_id('sumant') ?: 1) : 1,
         ));
     }
-    update_option('mp_comm_pages_v', '1');
+    update_option('mp_comm_pages_v', '2');
+    flush_rewrite_rules(false);
 }, 30);
 
 /* ---- /commodities-sitemap.xml --------------------------------------- *
@@ -7201,8 +7327,10 @@ function mp_comm_all_urls() {
     );
     $slugs = array_values(array_unique($slugs));
     $urls = array();
-    foreach (mp_comm_hub_slugs() as $hub) {
+    foreach (mp_comm_hub_slugs() as $metal => $hub) {
         $urls[] = home_url('/' . $hub . '/');
+        // Platinum has little location-level search demand - hub only.
+        if ($metal === 'platinum') continue;
         foreach ($slugs as $c) $urls[] = home_url('/' . $hub . '/' . $c . '/');
     }
     return $urls;
@@ -7237,12 +7365,65 @@ add_action('wp_head', function () {
     ?>
 <style id="mp-comm-css">
 .mp-comm{font-size:15px;line-height:1.6;margin:8px 0}
-.mp-comm h2{font-size:20px;margin:26px 0 10px}
-.mp-comm__cities{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
-.mp-comm__cities a{font-size:13px;padding:5px 11px;border:1px solid var(--mp-border,#e2e8f0);border-radius:999px;text-decoration:none;color:var(--mp-ink,#0f172a)}
-.mp-comm__cities a.on{background:var(--mp-ink,#0f172a);color:#fff;border-color:var(--mp-ink,#0f172a)}
-.mp-comm__more{font-size:13px;padding:5px 11px;border:1px dashed var(--mp-border,#94a3b8);border-radius:999px;background:none;color:var(--mp-muted,#64748b);cursor:pointer}
-.mp-comm__geo{margin:-8px 0 14px;font-size:13px;color:var(--mp-muted,#64748b)}
+.mp-comm h2{font-size:19px;margin:26px 0 10px}
+/* top bar */
+.mp-comm__bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 14px}
+.mp-comm__date{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;padding:7px 11px;background:var(--mp-surface,#fff)}
+.mp-comm__date input{border:0;background:none;font-size:13.5px;color:var(--mp-ink,#0f172a);font-family:inherit}
+.mp-comm__cal{opacity:.6}
+.mp-comm__metals{display:inline-flex;background:var(--mp-surface2,#f1f5f9);border-radius:10px;padding:3px}
+.mp-comm__metals a{font-size:13.5px;padding:6px 16px;border-radius:8px;text-decoration:none;color:var(--mp-muted,#64748b);font-weight:600}
+.mp-comm__metals a.on{background:#16a34a;color:#fff}
+.mp-comm__loc{margin-left:auto;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;padding:7px 12px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);font-size:13.5px;cursor:pointer}
+.mp-comm__geo{margin:-6px 0 12px;font-size:13px;color:var(--mp-muted,#64748b)}
+/* price cards */
+.mp-comm__cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:0 0 8px}
+.mp-comm__card{border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:13px 15px;background:var(--mp-surface2,#f8fafc)}
+.mp-comm__card-lbl{font-size:12.5px;color:var(--mp-muted,#64748b)}
+.mp-comm__card-row{display:flex;align-items:center;gap:9px;margin-top:5px;flex-wrap:wrap}
+.mp-comm__card-row strong{font-size:24px;font-variant-numeric:tabular-nums;color:var(--mp-ink,#0f172a)}
+.mp-comm__card-chg{font-size:12.5px;font-weight:600;padding:2px 8px;border-radius:6px}
+.mp-comm__card-chg.up{color:#166534;background:rgba(22,163,74,.13)}
+.mp-comm__card-chg.dn{color:#b91c1c;background:rgba(220,38,38,.13)}
+.mp-comm__card-chg.flat{color:var(--mp-muted,#64748b);background:var(--mp-surface,#eef1f4)}
+.mp-comm__asof{font-size:12px;color:var(--mp-muted,#64748b);margin:2px 0 4px}
+.mp-comm__hl{margin-left:4px}
+/* calculator */
+.mp-comm__calc{border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;padding:16px;background:var(--mp-surface,#fff)}
+.mp-comm__calc-in{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:14px}
+.mp-comm__field{display:flex;flex-direction:column;gap:5px}
+.mp-comm__field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-comm__field input,.mp-comm__field select{padding:8px 9px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a);font-family:inherit}
+.mp-comm__seg{display:inline-flex;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;overflow:hidden}
+.mp-comm__seg button{border:0;background:none;padding:8px 12px;font-size:13px;cursor:pointer;color:var(--mp-muted,#64748b);font-family:inherit}
+.mp-comm__seg button.on{background:#16a34a;color:#fff}
+.mp-comm__calc-res{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:12px}
+.mp-comm__calc-break{border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;font-size:13.5px}
+.mp-comm__calc-break>div{display:flex;justify-content:space-between;gap:10px}
+.mp-comm__calc-total{border-radius:10px;padding:14px;background:rgba(22,163,74,.10);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.mp-comm__calc-total span{font-size:12.5px;color:var(--mp-muted,#64748b)}
+.mp-comm__calc-total strong{font-size:24px;color:#16a34a;font-variant-numeric:tabular-nums;margin:3px 0}
+.mp-comm__calc-total small{font-size:11px;color:var(--mp-muted,#64748b)}
+.mp-comm__calc-worth{border-radius:10px;padding:12px 14px;background:var(--mp-surface2,#f8fafc);text-align:center}
+.mp-comm__calc-worth strong{font-size:13.5px}
+.mp-comm__calc-worth p{font-size:11.5px;color:var(--mp-muted,#64748b);margin:4px 0 8px}
+.mp-comm__worth-row{display:flex;gap:6px}
+.mp-comm__worth-row input{flex:1;min-width:0;padding:8px;border:1px solid var(--mp-border,#e2e8f0);border-radius:7px;font-size:13px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
+.mp-comm__worth-row button{border:0;background:#16a34a;color:#fff;padding:8px 12px;border-radius:7px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.mp-comm__worth-out{margin:8px 0 0;font-size:12.5px;font-weight:600;color:var(--mp-ink,#0f172a)}
+/* tables */
+.mp-comm__tablewrap{overflow-x:auto}
+.mp-comm__table{width:100%;border-collapse:collapse;margin:6px 0;font-variant-numeric:tabular-nums}
+.mp-comm__table th,.mp-comm__table td{padding:9px 12px;text-align:right;border-bottom:1px solid var(--mp-border,#eef1f4);white-space:nowrap}
+.mp-comm__table thead th,.mp-comm__table th[scope=row]{text-align:left}
+.mp-comm__table thead th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-comm__hist td.up{color:#16a34a}.mp-comm__hist td.dn{color:#dc2626}
+.mp-comm__tnote,.mp-comm__disc{font-size:12.5px;color:var(--mp-muted,#64748b)}
+.mp-comm__disc{margin-top:22px;padding:12px 14px;border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;background:var(--mp-surface2,#f8fafc)}
+.mp-comm__faq details{border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;padding:10px 14px;margin-bottom:8px}
+.mp-comm__faq summary{font-weight:700;cursor:pointer;font-size:14px}
+.mp-comm__faq p{margin:8px 0 0;font-size:14px}
+/* modal */
 .mp-comm__modal{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.55);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px}
 .mp-comm__modal-box{background:var(--mp-surface,#fff);border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;width:100%;max-width:440px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
 .mp-comm__modal-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--mp-border,#e2e8f0)}
@@ -7253,35 +7434,11 @@ add_action('wp_head', function () {
 .mp-comm__modal-list a:hover{background:var(--mp-surface2,#f1f5f9)}
 .mp-comm__modal-list a span{color:var(--mp-muted,#64748b);font-size:12px;white-space:nowrap}
 .mp-comm__modal-none{padding:12px 10px;color:var(--mp-muted,#64748b);font-size:13px}
-.mp-comm__head{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:baseline;padding:16px;border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;background:var(--mp-surface2,#f8fafc)}
-.mp-comm__price strong{font-size:30px;font-variant-numeric:tabular-nums}
-.mp-comm__price span{color:var(--mp-muted,#64748b);font-size:13px;margin-left:6px}
-.mp-comm__move{display:flex;flex-direction:column;gap:3px;font-size:13px}
-.mp-comm__chg.up{color:#16a34a}.mp-comm__chg.dn{color:#dc2626}
-.mp-comm__hl{color:var(--mp-muted,#64748b)}
-.mp-comm__asof{margin-left:auto;font-size:12px;color:var(--mp-muted,#64748b)}
-.mp-comm__tablewrap{overflow-x:auto}
-.mp-comm__table{width:100%;border-collapse:collapse;margin:6px 0;font-variant-numeric:tabular-nums}
-.mp-comm__table th,.mp-comm__table td{padding:9px 12px;text-align:right;border-bottom:1px solid var(--mp-border,#eef1f4);white-space:nowrap}
-.mp-comm__table thead th,.mp-comm__table th[scope=row]{text-align:left}
-.mp-comm__table thead th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
-.mp-comm__hist td.up{color:#16a34a}.mp-comm__hist td.dn{color:#dc2626}
-.mp-comm__tnote,.mp-comm__disc{font-size:12.5px;color:var(--mp-muted,#64748b)}
-.mp-comm__disc{margin-top:22px;padding:12px 14px;border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;background:var(--mp-surface2,#f8fafc)}
-.mp-comm__calc{border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:14px;background:var(--mp-surface,#fff)}
-.mp-comm__calc-in{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-.mp-comm__calc-in label{display:flex;flex-direction:column;font-size:12px;color:var(--mp-muted,#64748b);gap:4px}
-.mp-comm__calc-in input,.mp-comm__calc-in select{padding:7px 8px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
-.mp-comm__calc-out{margin-top:12px;display:flex;flex-direction:column;gap:5px;font-size:14px}
-.mp-comm__calc-out>div{display:flex;justify-content:space-between;gap:10px}
-.mp-comm__calc-out .tot{font-weight:700;border-top:1px solid var(--mp-border,#e2e8f0);padding-top:7px;margin-top:3px}
-.mp-comm__faq details{border:1px solid var(--mp-border,#e2e8f0);border-radius:10px;padding:10px 14px;margin-bottom:8px}
-.mp-comm__faq summary{font-weight:700;cursor:pointer;font-size:14px}
-.mp-comm__faq p{margin:8px 0 0;font-size:14px}
-html[data-theme="dark"] .mp-comm__head,html[data-theme="dark"] .mp-comm__disc{background:#111827;border-color:rgba(255,255,255,.08)}
-html[data-theme="dark"] .mp-comm__calc{background:#0f172a;border-color:rgba(255,255,255,.08)}
-html[data-theme="dark"] .mp-comm__cities a{color:#e2e8f0;border-color:rgba(255,255,255,.12)}
-html[data-theme="dark"] .mp-comm__cities a.on{background:#e2e8f0;color:#0f172a}
+@media(max-width:620px){.mp-comm__calc-res{grid-template-columns:1fr}.mp-comm__loc{margin-left:0}.mp-comm__bar{gap:8px}}
+html[data-theme="dark"] .mp-comm__card,html[data-theme="dark"] .mp-comm__disc,html[data-theme="dark"] .mp-comm__calc-worth{background:#111827;border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-comm__calc,html[data-theme="dark"] .mp-comm__date,html[data-theme="dark"] .mp-comm__loc{background:#0f172a;border-color:rgba(255,255,255,.1)}
+html[data-theme="dark"] .mp-comm__metals,html[data-theme="dark"] .mp-comm__calc-total{background:#1e293b}
+html[data-theme="dark"] .mp-comm__card-row strong,html[data-theme="dark"] .mp-comm__worth-out{color:#f1f5f9}
 html[data-theme="dark"] .mp-comm__modal-box{background:#0f172a;border-color:rgba(255,255,255,.12)}
 html[data-theme="dark"] .mp-comm__modal-list a{color:#e2e8f0}
 html[data-theme="dark"] .mp-comm__modal-list a:hover{background:#1e293b}
@@ -7925,18 +8082,43 @@ function mp_comm_intl() {
         'new-york'  => array('New York', 'United States', 'USD', '$', 'There is no federal sales tax on bullion in the US; some states levy their own. New York prices track the COMEX futures market directly.'),
         'toronto'   => array('Toronto', 'Canada', 'CAD', 'C$', 'Gold and silver of 99.5%+ / 99.9%+ purity are GST/HST-free in Canada, so bullion prices sit close to the international rate.'),
         'sydney'    => array('Sydney', 'Australia', 'AUD', 'A$', 'Investment-grade gold and silver are GST-free in Australia. Sydney prices follow the international market in Australian dollars.'),
+
+        /* Countries with high gold demand - priced as the international rate in local currency.
+           Local import duty / VAT / GST are NOT applied (they vary widely and change often);
+           retail prices in these markets are typically 3-20% higher than shown. */
+        'pakistan'   => array('Pakistan', 'Pakistan', 'PKR', 'Rs&nbsp;', 'Pakistan is one of the largest gold-consuming markets in South Asia. Retail prices add sales tax and a jewellers&rsquo; association premium over the figure shown, which is the international rate in Pakistani rupees.'),
+        'sri-lanka'  => array('Sri Lanka', 'Sri Lanka', 'LKR', 'Rs&nbsp;', 'Sri Lanka has strong wedding-season and festival gold demand. Local retail rates include import duty and taxes on top of the international price shown here in Sri Lankan rupees.'),
+        'nepal'      => array('Nepal', 'Nepal', 'NPR', 'Rs&nbsp;', 'Nepal has very high per-capita gold demand and a substantial import duty, so shop rates run well above the international price shown. The figure here is the world price converted to Nepali rupees.'),
+        'bhutan'     => array('Bhutan', 'Bhutan', 'BTN', 'Nu.&nbsp;', 'The ngultrum is pegged 1:1 to the Indian rupee and most of Bhutan&rsquo;s gold is imported via India, so local rates track the Indian market closely. The figure shown excludes Indian import duty and GST.'),
+        'bangladesh' => array('Bangladesh', 'Bangladesh', 'BDT', 'Tk&nbsp;', 'Bangladesh has large bridal and remittance-driven gold demand. BAJUS (the jewellers&rsquo; association) sets a daily rate that adds import duty, VAT and a premium over the international price shown here in taka.'),
+        'china'      => array('China', 'China', 'CNY', 'CN&yen;', 'China is the world&rsquo;s largest gold consumer. The Shanghai Gold Exchange benchmark usually trades at a small premium or discount to the international price; the figure shown is the world price in yuan and excludes 13% VAT on jewellery.'),
+        'saudi-arabia' => array('Saudi Arabia', 'Saudi Arabia', 'SAR', 'SR&nbsp;', 'The riyal is pegged to the US dollar. Investment-grade gold is VAT-exempt in Saudi Arabia; 15% VAT applies to jewellery making charges. Prices track the international rate closely.'),
+        'kuwait'     => array('Kuwait', 'Kuwait', 'KWD', 'KD&nbsp;', 'Kuwait has high per-capita gold demand and no VAT, so retail prices sit close to the international rate shown here in Kuwaiti dinar.'),
+        'qatar'      => array('Qatar', 'Qatar', 'QAR', 'QR&nbsp;', 'The riyal is pegged to the US dollar and there is no VAT on gold in Qatar, so local prices closely follow the international market.'),
+        'oman'       => array('Oman', 'Oman', 'OMR', 'RO&nbsp;', 'Oman applies 5% VAT to jewellery but investment gold is exempt. The rial is pegged to the dollar and prices track the world market.'),
+        'bahrain'    => array('Bahrain', 'Bahrain', 'BHD', 'BD&nbsp;', 'The Bahraini dinar is pegged to the US dollar. Investment-grade gold is VAT-free; prices closely follow the international rate.'),
+        'thailand'   => array('Thailand', 'Thailand', 'THB', '&#3647;', 'Thailand quotes gold in baht-weight (about 15.244 g) and 96.5% purity for local &ldquo;Thai gold&rdquo;. The figure shown is the international 999 price converted to Thai baht per gram.'),
+        'malaysia'   => array('Malaysia', 'Malaysia', 'MYR', 'RM&nbsp;', 'Malaysia has strong gold-jewellery and investment demand; investment-grade gold is exempt from sales tax. Prices follow the international market in ringgit.'),
+        'indonesia'  => array('Indonesia', 'Indonesia', 'IDR', 'Rp&nbsp;', 'Indonesia is a major gold market; Antam (the state producer) sets a widely-followed retail price that adds a premium and tax over the international rate shown here in rupiah.'),
+        'turkey'     => array('Turkey', 'Turkey', 'TRY', '&#8378;', 'Gold is a core inflation hedge for Turkish households. The Istanbul market usually trades near the international price; the figure shown is the world rate in Turkish lira.'),
+        'egypt'      => array('Egypt', 'Egypt', 'EGP', 'E&pound;', 'Egypt has seen a surge in gold buying as a store of value. Local prices set by the jewellers&rsquo; division add a making and dealer premium over the international rate shown here in Egyptian pounds.'),
+        'vietnam'    => array('Vietnam', 'Vietnam', 'VND', '&#8363;', 'Vietnam quotes SJC gold bars, which often trade at a large premium to the world price. The figure shown is the international 999 price converted to Vietnamese dong per gram.'),
     );
 }
 
-/* USD -> ccy. AED is pegged; the rest come from Yahoo with sane fallbacks. */
+/* USD -> ccy. Pegged currencies are hard-coded; the rest come from Yahoo with fallbacks. */
 function mp_comm_fx($ccy) {
     $ccy = strtoupper($ccy);
-    if ($ccy === 'USD') return 1.0;
-    if ($ccy === 'AED') return 3.6725; // pegged
+    $pegged = array('USD' => 1.0, 'AED' => 3.6725, 'SAR' => 3.75, 'QAR' => 3.64, 'OMR' => 0.3845, 'BHD' => 0.376, 'BTN' => null);
+    if ($ccy === 'BTN') $ccy = 'INR'; // ngultrum pegged 1:1 to INR
+    if (isset($pegged[$ccy]) && $pegged[$ccy] !== null) return $pegged[$ccy];
     $ck = 'mp_comm_fx_' . $ccy;
     $c = get_transient($ck);
     if (is_numeric($c)) return (float) $c;
-    $fallback = array('SGD' => 1.29, 'GBP' => 0.79, 'CAD' => 1.36, 'AUD' => 1.52);
+    $fallback = array('SGD' => 1.29, 'GBP' => 0.79, 'CAD' => 1.36, 'AUD' => 1.52, 'INR' => 88.0,
+        'PKR' => 278.0, 'LKR' => 300.0, 'NPR' => 141.0, 'BDT' => 119.0, 'CNY' => 7.15,
+        'KWD' => 0.307, 'THB' => 34.0, 'MYR' => 4.4, 'IDR' => 16200.0, 'TRY' => 39.0,
+        'EGP' => 49.0, 'VND' => 25400.0);
     $q = function_exists('mp_md_yahoo_one') ? mp_md_yahoo_one($ccy . '=X') : null;
     $rate = ($q && !empty($q['price']) && $q['price'] > 0) ? (float) $q['price'] : ($fallback[$ccy] ?? 1.0);
     set_transient($ck, $rate, 15 * MINUTE_IN_SECONDS);
