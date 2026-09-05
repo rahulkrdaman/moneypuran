@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MoneyPuran Market Data
  * Description: Real market data (server-side, cached) - index bar, Live Markets widget, Markets Dashboard, session-aware news ticker, and city Gold/Silver + Fuel rate tools. Safe to deactivate.
- * Version: 1.33.0
+ * Version: 1.34.0
  * Author: moneypuran.com
  * License: GPL-2.0-or-later
  */
@@ -9770,5 +9770,527 @@ add_filter('rank_math/sitemap/index', function ($links) {
 /* keep the calculators hub in the quick-tools panel */
 add_filter('mp_quick_tools', function ($t) {
     if (!isset($t['Calculators'])) $t = array_merge(array('Calculators' => '/calculators/'), $t);
+    return $t;
+});
+
+
+/* ============================================================================
+ * CROSS-BORDER FX + MACRO HUBS  (v1.34.0)  [Module 4, data-backed parts]
+ *   /currency/<pair>-to-inr/    live rate, 24h range, 30-day chart, remittance calc
+ *   /macro/us-treasury-yield-curve/   3M/5Y/10Y/30Y + inversion status
+ *   /macro/fed-rate-monitor/          target range + FOMC calendar (editable)
+ *   All rates via the existing keyless Yahoo v8 feed; Fed data is an editable
+ *   option (no free FedWatch API).
+ * ==========================================================================*/
+
+/* slug => [from, to, fromName, toName, fromSym, toSym, yahooSym] */
+function mp_fx_pairs() {
+    static $m = null;
+    if ($m !== null) return $m;
+    $m = apply_filters('mp_fx_pairs', array(
+        'aed-to-inr' => array('AED', 'INR', 'UAE Dirham', 'Indian Rupee', 'AED ', '&#8377;', 'AEDINR=X'),
+        'usd-to-inr' => array('USD', 'INR', 'US Dollar', 'Indian Rupee', '$', '&#8377;', 'INR=X'),
+        'sar-to-inr' => array('SAR', 'INR', 'Saudi Riyal', 'Indian Rupee', 'SR ', '&#8377;', 'SARINR=X'),
+        'gbp-to-inr' => array('GBP', 'INR', 'British Pound', 'Indian Rupee', '&pound;', '&#8377;', 'GBPINR=X'),
+        'eur-to-inr' => array('EUR', 'INR', 'Euro', 'Indian Rupee', '&euro;', '&#8377;', 'EURINR=X'),
+        'qar-to-inr' => array('QAR', 'INR', 'Qatari Riyal', 'Indian Rupee', 'QR ', '&#8377;', 'QARINR=X'),
+        'kwd-to-inr' => array('KWD', 'INR', 'Kuwaiti Dinar', 'Indian Rupee', 'KD ', '&#8377;', 'KWDINR=X'),
+        'omr-to-inr' => array('OMR', 'INR', 'Omani Rial', 'Indian Rupee', 'RO ', '&#8377;', 'OMRINR=X'),
+        'bhd-to-inr' => array('BHD', 'INR', 'Bahraini Dinar', 'Indian Rupee', 'BD ', '&#8377;', 'BHDINR=X'),
+        'cad-to-inr' => array('CAD', 'INR', 'Canadian Dollar', 'Indian Rupee', 'C$', '&#8377;', 'CADINR=X'),
+        'aud-to-inr' => array('AUD', 'INR', 'Australian Dollar', 'Indian Rupee', 'A$', '&#8377;', 'AUDINR=X'),
+        'sgd-to-inr' => array('SGD', 'INR', 'Singapore Dollar', 'Indian Rupee', 'S$', '&#8377;', 'SGDINR=X'),
+    ));
+    return $m;
+}
+function mp_fx_url($slug) { return home_url('/currency/' . $slug . '/'); }
+function mp_fx_ctx() {
+    $obj = get_queried_object();
+    if (!($obj instanceof WP_Post) || $obj->post_name !== 'currency') return '';
+    $s = sanitize_title((string) get_query_var('mp_fx'));
+    return ($s && isset(mp_fx_pairs()[$s])) ? $s : '';
+}
+
+/* live rate + 24h range + 30-day daily series */
+function mp_fx_data($slug) {
+    $pairs = mp_fx_pairs();
+    if (!isset($pairs[$slug])) return null;
+    $p = $pairs[$slug];
+    $sym = $p[6];
+    $q = function_exists('mp_md_yahoo_one') ? mp_md_yahoo_one($sym) : null;
+    $rate = ($q && !empty($q['price'])) ? (float) $q['price'] : null;
+    $chg  = ($q && isset($q['chgPct'])) ? $q['chgPct'] : null;
+
+    $o = function_exists('mp_candle_ohlc') ? mp_candle_ohlc($sym, '1D') : null;
+    $bars = (is_array($o) && !empty($o['bars'])) ? array_slice($o['bars'], -31) : array();
+    $hist = array(); $lo24 = $hi24 = null;
+    foreach ($bars as $b) {
+        $hist[] = array('iso' => gmdate('Y-m-d', (int) $b[0]), 'date' => gmdate('d M', (int) $b[0]), 'c' => round((float) $b[4], 4));
+    }
+    if ($bars) { $lastBar = end($bars); $lo24 = (float) $lastBar[3]; $hi24 = (float) $lastBar[2]; }
+    if (!$rate && $hist) $rate = $hist[count($hist) - 1]['c'];
+    $series = array_map(function ($h) { return $h['c']; }, $hist);
+    $min30 = $series ? min($series) : $rate;
+    $max30 = $series ? max($series) : $rate;
+
+    return array(
+        'slug' => $slug, 'from' => $p[0], 'to' => $p[1], 'fromName' => $p[2], 'toName' => $p[3],
+        'fromSym' => $p[4], 'toSym' => $p[5],
+        'rate' => $rate, 'chg_pct' => $chg,
+        'low24' => $lo24 ?: $min30, 'high24' => $hi24 ?: $max30,
+        'min30' => $min30, 'max30' => $max30,
+        'history' => $hist, 'asOf' => gmdate('c'),
+    );
+}
+
+/* ---- routing ---- */
+add_action('init', function () {
+    add_rewrite_rule('^currency/([a-z0-9-]+)/?$', 'index.php?pagename=currency&mp_fx=$matches[1]', 'top');
+    add_rewrite_rule('^macro/([a-z0-9-]+)/?$', 'index.php?pagename=macro&mp_macro=$matches[1]', 'top');
+    if (get_option('mp_fx_rw_v') !== '1') { flush_rewrite_rules(false); update_option('mp_fx_rw_v', '1'); }
+}, 23);
+add_filter('query_vars', function ($v) { $v[] = 'mp_fx'; $v[] = 'mp_macro'; return $v; });
+add_filter('redirect_canonical', function ($r) { return (get_query_var('mp_fx') || get_query_var('mp_macro')) ? false : $r; });
+add_action('template_redirect', function () {
+    $obj = get_queried_object();
+    if (!($obj instanceof WP_Post)) return;
+    if ($obj->post_name === 'currency') {
+        $s = sanitize_title((string) get_query_var('mp_fx'));
+        if ($s && !isset(mp_fx_pairs()[$s])) { wp_safe_redirect(home_url('/currency/'), 301); exit; }
+        do_action('litespeed_control_set_ttl', 600); header('Cache-Control: public, max-age=600, s-maxage=600');
+    } elseif ($obj->post_name === 'macro') {
+        $s = sanitize_title((string) get_query_var('mp_macro'));
+        if ($s && !in_array($s, array('us-treasury-yield-curve', 'fed-rate-monitor'), true)) { wp_safe_redirect(home_url('/macro/'), 301); exit; }
+        do_action('litespeed_control_set_ttl', 1800); header('Cache-Control: public, max-age=1800, s-maxage=1800');
+    }
+}, 9);
+add_action('init', function () {
+    if (get_option('mp_fxmacro_page_v') === '1') return;
+    if (wp_doing_ajax() || wp_doing_cron() || (defined('REST_REQUEST') && REST_REQUEST)) return;
+    $mk = function ($slug, $title, $sc, $author) {
+        $p = get_page_by_path($slug);
+        if (!$p) {
+            wp_insert_post(array('post_type' => 'page', 'post_status' => 'publish', 'post_name' => $slug,
+                'post_title' => $title, 'post_author' => $author,
+                'post_content' => $sc));
+        } elseif (strpos((string) $p->post_content, $sc) === false && strpos((string) $p->post_content, '[mp_') === false) {
+            wp_update_post(array('ID' => $p->ID, 'post_content' => $p->post_content . "\n" . $sc));
+        }
+    };
+    $a = function_exists('mp_eeat_user_id') ? (mp_eeat_user_id('diksha-kumari') ?: 1) : 1;
+    $mk('currency', 'Live Currency Exchange Rates & Remittance Calculator', "<p>Live mid-market exchange rates for sending money to India from the Gulf, the US, the UK and beyond &mdash; with a 30-day trend and a remittance calculator.</p>\n[mp_currency]", $a);
+    $mk('macro', 'US Fed Rate & Treasury Yields &mdash; Macro Monitor', "<p>Track the US Federal Reserve policy rate and the Treasury yield curve &mdash; the two numbers that move global markets.</p>\n[mp_macro]", $a);
+    update_option('mp_fxmacro_page_v', '1');
+    flush_rewrite_rules(false);
+}, 30);
+
+/* ---- currency shortcode ---- */
+add_shortcode('mp_currency', function () {
+    $slug = mp_fx_ctx();
+    return $slug ? mp_fx_render_one($slug) : mp_fx_render_hub();
+});
+function mp_fx_render_hub() {
+    ob_start(); ?>
+<div class="mp-fx-hub">
+  <h2>Send money to India</h2>
+  <div class="mp-fx-hub__grid">
+    <?php foreach (mp_fx_pairs() as $sl => $p) : ?>
+      <a href="<?php echo esc_url(mp_fx_url($sl)); ?>"><strong><?php echo esc_html($p[0] . ' &rarr; ' . $p[1]); ?></strong><span><?php echo esc_html($p[2] . ' to ' . $p[3]); ?></span></a>
+    <?php endforeach; ?>
+  </div>
+  <?php echo mp_fx_css(); ?>
+</div>
+    <?php
+    return ob_get_clean();
+}
+function mp_fx_render_one($slug) {
+    $d = mp_fx_data($slug);
+    if (!$d || empty($d['rate'])) return '<p>Rate data is loading &mdash; please refresh in a moment.</p>';
+    $fs = html_entity_decode($d['fromSym']); $ts = html_entity_decode($d['toSym']);
+    $rate = $d['rate']; $inv = $rate ? 1 / $rate : 0;
+    $chg = $d['chg_pct'];
+    ob_start(); ?>
+<div class="mp-fx" data-slug="<?php echo esc_attr($slug); ?>" data-rate="<?php echo esc_attr($rate); ?>"
+     data-from="<?php echo esc_attr($d['from']); ?>" data-to="<?php echo esc_attr($d['to']); ?>"
+     data-fromsym="<?php echo esc_attr($fs); ?>" data-tosym="<?php echo esc_attr($ts); ?>"
+     data-hist='<?php echo esc_attr(wp_json_encode($d['history'])); ?>'>
+  <p class="mp-fx__crumb"><a href="<?php echo esc_url(home_url('/currency/')); ?>">&larr; All currencies</a></p>
+
+  <div class="mp-fx__head">
+    <div class="mp-fx__rate">
+      <strong>1 <?php echo esc_html($d['from']); ?> = <?php echo $ts; ?><?php echo number_format((float) $rate, 4); ?></strong>
+      <?php if ($chg !== null) : ?><span class="mp-fx__chg <?php echo $chg >= 0 ? 'up' : 'dn'; ?>"><?php echo $chg >= 0 ? '&#9650; +' : '&#9660; '; ?><?php echo number_format($chg, 2); ?>% today</span><?php endif; ?>
+      <div class="mp-fx__inv">1 <?php echo esc_html($d['to']); ?> = <?php echo $fs; ?><?php echo number_format($inv, 4); ?></div>
+    </div>
+    <div class="mp-fx__stats">
+      <div><span>24-hour range</span><?php echo $ts . number_format($d['low24'], 4) . ' &ndash; ' . $ts . number_format($d['high24'], 4); ?></div>
+      <div><span>30-day range</span><?php echo $ts . number_format($d['min30'], 4) . ' &ndash; ' . $ts . number_format($d['max30'], 4); ?></div>
+      <div><span>Updated</span><span data-live-datetime="datetime"><?php echo esc_html(date('j M Y, H:i', strtotime($d['asOf']))); ?></span></div>
+    </div>
+  </div>
+
+  <?php if (!empty($d['history'])) : ?>
+  <h2>30-day <?php echo esc_html($d['from'] . '/' . $d['to']); ?> trend</h2>
+  <svg class="mp-fx__chart" data-role="chart" viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true"></svg>
+  <div class="mp-comm__tablewrap"><table class="mp-comm__table">
+    <thead><tr><th>Date</th><th>1 <?php echo esc_html($d['from']); ?> = <?php echo esc_html($d['to']); ?></th></tr></thead>
+    <tbody>
+    <?php $rev = array_reverse($d['history']); $step = max(1, intval(count($rev) / 8)); ?>
+    <?php foreach ($rev as $i => $h) : if ($i % $step !== 0) continue; ?>
+      <tr><td><?php echo esc_html($h['date']); ?></td><td><?php echo $ts . number_format($h['c'], 4); ?></td></tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table></div>
+  <?php endif; ?>
+
+  <h2>Remittance calculator</h2>
+  <div class="mp-fx__calc">
+    <div class="mp-fx__calc-in">
+      <label>You send (<?php echo esc_html($d['from']); ?>)<input type="number" data-role="send" value="5000" min="0" step="100"></label>
+      <label>Transfer fee (<?php echo esc_html($d['from']); ?>)<input type="number" data-role="fee" value="0" min="0" step="1"></label>
+      <label>Provider margin over mid-rate (%)<input type="number" data-role="margin" value="1" min="0" step="0.1"></label>
+    </div>
+    <div class="mp-fx__calc-out">
+      <span>Recipient in India gets about</span>
+      <strong data-role="gets"><?php echo $ts; ?>0</strong>
+      <small data-role="note"></small>
+    </div>
+  </div>
+
+  <h2>How the rate works</h2>
+  <p>The <strong>mid-market rate</strong> above is the midpoint of the live buy and sell price for <?php echo esc_html($d['fromName']); ?> against the <?php echo esc_html($d['toName']); ?> &mdash; the rate you see on Google or Reuters. Money-transfer providers and banks apply a <em>margin</em> on top (typically 0.5&ndash;3%) plus a flat fee, so the amount actually delivered is a little lower. The calculator above lets you model both.</p>
+
+  <h2>Frequently asked questions</h2>
+  <div class="mp-comm__faq">
+    <details open><summary>What is the best <?php echo esc_html($d['from']); ?> to <?php echo esc_html($d['to']); ?> rate right now?</summary>
+      <p>The mid-market rate is <?php echo $ts . number_format((float) $rate, 4); ?> per <?php echo esc_html($d['from']); ?> as of <?php echo esc_html(gmdate('j M Y H:i')); ?> UTC. No provider gives you exactly the mid-market rate &mdash; compare the total amount delivered (after margin and fees) across two or three services before sending.</p></details>
+    <details><summary>Is there tax on money sent to India?</summary>
+      <p>Money received by a resident Indian from a close relative abroad is not taxed as income. For other transfers, gifts above &#8377;50,000 in a year from a non-relative can be taxable in the recipient&rsquo;s hands. On the sending side, some countries (e.g. India&rsquo;s own LRS) apply a tax-collected-at-source; check your local rules.</p></details>
+    <details><summary>What moves the <?php echo esc_html($d['from'] . '/' . $d['to']); ?> rate?</summary>
+      <p>For rupee pairs, the main drivers are the US dollar&rsquo;s global strength, crude oil prices (India is a big importer), foreign investment flows into Indian markets, the RBI&rsquo;s interventions, and the interest-rate gap between the two countries.</p></details>
+  </div>
+
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and education platform. Exchange rates are indicative mid-market quotes and may be delayed; the rate your provider offers will differ. This is not financial or tax advice.</div>
+  <?php echo mp_fx_css(); ?>
+</div>
+<script><?php echo mp_fx_js(); ?></script>
+    <?php
+    return ob_get_clean();
+}
+function mp_fx_js() {
+    ob_start(); ?>
+(function(){
+  var R = document.currentScript.closest('.mp-fx') || document.querySelector('.mp-fx');
+  if (!R) return;
+  var rate = parseFloat(R.getAttribute('data-rate')) || 0;
+  var TS = R.getAttribute('data-tosym') || '₹', FROM = R.getAttribute('data-from'), TO = R.getAttribute('data-to');
+  var hist = []; try { hist = JSON.parse(R.getAttribute('data-hist')) || []; } catch(e){}
+  function inr(x){ return TS + (Math.round(x*100)/100).toLocaleString('en-IN'); }
+
+  var svg = R.querySelector('[data-role=chart]');
+  if (svg && hist.length > 1){
+    var vs = hist.map(function(h){ return h.c; }), mn = Math.min.apply(null,vs), mx = Math.max.apply(null,vs), w=600,h=120,pad=6;
+    var pts = hist.map(function(x,i){ return (i/(hist.length-1)*w).toFixed(1)+','+(h-pad - (x.c-mn)/((mx-mn)||1)*(h-2*pad)).toFixed(1); }).join(' ');
+    svg.innerHTML = '<polyline points="'+pts+'" fill="none" stroke="#34d399" stroke-width="2"/><polygon points="0,'+h+' '+pts+' '+w+','+h+'" fill="#34d399" opacity="0.12"/>';
+  }
+
+  function calc(){
+    var send = parseFloat((R.querySelector('[data-role=send]')||{}).value)||0;
+    var fee = parseFloat((R.querySelector('[data-role=fee]')||{}).value)||0;
+    var margin = parseFloat((R.querySelector('[data-role=margin]')||{}).value)||0;
+    var eff = rate * (1 - margin/100);
+    var gets = Math.max(send - fee, 0) * eff;
+    R.querySelector('[data-role=gets]').textContent = inr(gets);
+    var note = R.querySelector('[data-role=note]');
+    if (note) note.textContent = 'at ' + (Math.round(eff*10000)/10000) + ' ' + TO + '/' + FROM + ' (mid-market ' + (Math.round(rate*10000)/10000) + ', less ' + margin + '% margin' + (fee? ' and ' + fee + ' ' + FROM + ' fee':'') + ')';
+  }
+  R.addEventListener('input', calc); R.addEventListener('change', calc); calc();
+}());
+<?php
+    return ob_get_clean();
+}
+function mp_fx_css() {
+    static $d = false; if ($d) return ''; $d = true;
+    return '<style id="mp-fx-css">
+.mp-fx,.mp-fx-hub{font-size:15px;line-height:1.6}
+.mp-fx h2,.mp-fx-hub h2{font-size:19px;margin:24px 0 10px}
+.mp-fx__crumb{font-size:13px;margin:0 0 8px}
+.mp-fx-hub__grid,.mp-macro-hub__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.mp-fx-hub__grid a{display:block;border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:13px 15px;text-decoration:none;color:inherit;background:var(--mp-surface,#fff)}
+.mp-fx-hub__grid strong{display:block;font-size:15px}.mp-fx-hub__grid span{font-size:12px;color:var(--mp-muted,#64748b)}
+.mp-fx__head{display:flex;flex-wrap:wrap;gap:16px 30px;align-items:flex-start;padding:16px;border:1px solid var(--mp-border,#e2e8f0);border-radius:14px;background:var(--mp-surface2,#f8fafc)}
+.mp-fx__rate strong{font-size:26px;font-variant-numeric:tabular-nums;display:block}
+.mp-fx__chg{font-size:12.5px;font-weight:600}
+.mp-fx__chg.up{color:#16a34a}.mp-fx__chg.dn{color:#dc2626}
+.mp-fx__inv{font-size:13px;color:var(--mp-muted,#64748b);margin-top:3px}
+.mp-fx__stats{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.mp-fx__stats span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-fx__chart{width:100%;height:120px;margin:6px 0}
+.mp-fx__calc{border:1px solid var(--mp-border,#e2e8f0);border-radius:12px;padding:14px;background:var(--mp-surface,#fff);display:grid;grid-template-columns:1.4fr 1fr;gap:14px}
+.mp-fx__calc-in{display:flex;flex-direction:column;gap:10px}
+.mp-fx__calc-in label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--mp-muted,#64748b)}
+.mp-fx__calc-in input{padding:8px;border:1px solid var(--mp-border,#e2e8f0);border-radius:8px;font-size:14px;background:var(--mp-surface,#fff);color:var(--mp-ink,#0f172a)}
+.mp-fx__calc-out{background:#0d3b2e;color:#e6f4ee;border-radius:10px;padding:14px;display:flex;flex-direction:column;justify-content:center;text-align:center}
+.mp-fx__calc-out strong{font-size:24px;color:#34d399;margin:4px 0;font-variant-numeric:tabular-nums}
+.mp-fx__calc-out small{font-size:11px;opacity:.8}
+@media(max-width:620px){.mp-fx__calc{grid-template-columns:1fr}}
+html[data-theme="dark"] .mp-fx__head{background:#111827;border-color:rgba(255,255,255,.08)}
+html[data-theme="dark"] .mp-fx__calc,html[data-theme="dark"] .mp-fx-hub__grid a{background:#0f172a;border-color:rgba(255,255,255,.08)}
+</style>';
+}
+
+/* ---- macro shortcode ---- */
+add_shortcode('mp_macro', function () {
+    $s = sanitize_title((string) get_query_var('mp_macro'));
+    if ($s === 'us-treasury-yield-curve') return mp_macro_yields();
+    if ($s === 'fed-rate-monitor') return mp_macro_fed();
+    return mp_macro_hub();
+});
+function mp_macro_hub() {
+    ob_start(); ?>
+<div class="mp-macro-hub">
+  <div class="mp-macro-hub__grid">
+    <a href="<?php echo esc_url(home_url('/macro/fed-rate-monitor/')); ?>"><strong>US Fed Rate Monitor</strong><span>Federal funds target range &amp; the FOMC meeting calendar</span></a>
+    <a href="<?php echo esc_url(home_url('/macro/us-treasury-yield-curve/')); ?>"><strong>US Treasury Yield Curve</strong><span>3-month, 5-, 10- and 30-year yields and the inversion signal</span></a>
+    <a href="<?php echo esc_url(home_url('/markets/why-market-moved-today/')); ?>"><strong>Why the market moved today</strong><span>Daily India market drivers</span></a>
+  </div>
+  <?php echo mp_fx_css(); ?>
+</div>
+    <?php
+    return ob_get_clean();
+}
+
+function mp_macro_yields() {
+    $syms = array('3-Month' => '^IRX', '5-Year' => '^FVX', '10-Year' => '^TNX', '30-Year' => '^TYX');
+    $rows = array();
+    foreach ($syms as $lbl => $sym) {
+        $q = function_exists('mp_md_yahoo_one') ? mp_md_yahoo_one($sym) : null;
+        $rows[$lbl] = $q && !empty($q['price']) ? array('y' => (float) $q['price'], 'chg' => $q['change'] ?? null) : null;
+    }
+    $y3 = isset($rows['3-Month']['y']) ? $rows['3-Month']['y'] : null;
+    $y10 = isset($rows['10-Year']['y']) ? $rows['10-Year']['y'] : null;
+    $spread = ($y3 !== null && $y10 !== null) ? round($y10 - $y3, 2) : null;
+    $inverted = ($spread !== null && $spread < 0);
+    ob_start(); ?>
+<div class="mp-macro">
+  <p class="mp-fx__crumb"><a href="<?php echo esc_url(home_url('/macro/')); ?>">&larr; Macro monitor</a></p>
+
+  <?php if ($spread !== null) : ?>
+  <div class="mp-macro__signal <?php echo $inverted ? 'bad' : 'ok'; ?>">
+    <strong>10Y &minus; 3M spread: <?php echo ($spread >= 0 ? '+' : '') . $spread; ?> pp</strong>
+    <span><?php echo $inverted
+      ? 'The yield curve is <b>inverted</b> &mdash; short-term rates are above long-term rates. Historically this has preceded US recessions by 6&ndash;18 months, though the timing is loose.'
+      : 'The yield curve is <b>positively sloped</b> (normal) &mdash; long-term rates are above short-term rates, the usual state in an expansion.'; ?></span>
+  </div>
+  <?php endif; ?>
+
+  <div class="mp-comm__tablewrap"><table class="mp-comm__table">
+    <thead><tr><th>Maturity</th><th>Yield</th><th>Change</th></tr></thead>
+    <tbody>
+      <?php foreach ($syms as $lbl => $sym) : $r = $rows[$lbl]; ?>
+        <tr><th scope="row"><?php echo esc_html($lbl); ?></th>
+          <td><?php echo $r ? number_format($r['y'], 2) . '%' : '&mdash;'; ?></td>
+          <td class="<?php echo ($r && $r['chg'] !== null) ? ($r['chg'] > 0 ? 'up' : ($r['chg'] < 0 ? 'dn' : '')) : ''; ?>">
+            <?php echo ($r && $r['chg'] !== null) ? (($r['chg'] > 0 ? '+' : '') . number_format($r['chg'], 3) . ' pp') : '&mdash;'; ?></td>
+        </tr>
+      <?php endforeach; ?>
+    </tbody>
+  </table></div>
+  <p class="mp-calc2__note">Yields are the CBOE indicative rates for on-the-run US Treasuries, updated through the US session. &ldquo;3-Month&rdquo; is the 13-week T-bill discount rate, used here as the short-end reference in place of the 2-year note.</p>
+
+  <h2>What the yield curve tells you</h2>
+  <p>The <strong>yield curve</strong> plots US government borrowing costs from 3 months to 30 years. Normally it slopes upward &mdash; lenders want more for locking money away longer. When short-term yields rise above long-term yields (an <strong>inversion</strong>), it signals that the market expects the Federal Reserve to cut rates in future, usually because growth is slowing. The 10-year&nbsp;minus&nbsp;3-month spread is the version the New York Fed uses in its recession-probability model.</p>
+
+  <h2>Frequently asked questions</h2>
+  <div class="mp-comm__faq">
+    <details open><summary>What does an inverted yield curve mean?</summary>
+      <p>It means investors can earn more on a 3-month Treasury bill than on a 10-year note. That only makes sense if they expect interest rates &mdash; and often growth &mdash; to fall. Every US recession since the 1970s was preceded by an inversion, but there have also been inversions without an immediate recession, and the lag can be a year or more.</p></details>
+    <details><summary>Why do US Treasury yields matter for India?</summary>
+      <p>The 10-year US Treasury is the global benchmark &ldquo;risk-free&rdquo; rate. When it rises, capital tends to flow out of emerging markets like India toward US bonds, pressuring the rupee and Indian equities; when it falls, the opposite. It also influences Indian corporate borrowing costs abroad.</p></details>
+  </div>
+
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and education platform. Yield data is indicative and may be delayed. Nothing here is investment advice.</div>
+  <?php echo mp_fx_css(); ?>
+</div>
+    <?php
+    return ob_get_clean();
+}
+
+/* Fed data: editable in Settings -> Reading -> "Fed rate monitor (JSON)" */
+function mp_fed_default() {
+    return array(
+        'as_of' => '2026-09-01',
+        'rate_low' => 3.75, 'rate_high' => 4.00,
+        'stance' => 'The Fed has signalled it is close to the end of its easing cycle and will move meeting-by-meeting on incoming inflation and jobs data.',
+        'meetings' => array('2026-01-28', '2026-03-18', '2026-04-29', '2026-06-17', '2026-07-29', '2026-09-16', '2026-10-28', '2026-12-16'),
+    );
+}
+function mp_fed_data() {
+    $d = get_option('mp_fed_data');
+    return (is_array($d) && !empty($d['meetings'])) ? $d : mp_fed_default();
+}
+add_action('admin_init', function () {
+    register_setting('reading', 'mp_fed_data_json', array('type' => 'string'));
+    add_settings_field('mp_fed_data_json', 'Fed rate monitor (JSON)', function () {
+        $c = mp_fed_data();
+        echo '<textarea name="mp_fed_data_json" rows="5" class="large-text code" placeholder=\'{"as_of":"YYYY-MM-DD","rate_low":3.75,"rate_high":4.00,"stance":"...","meetings":["2026-03-18","..."]}\'></textarea>';
+        echo '<p class="description">Target range, one-line stance and upcoming FOMC dates. Last updated: <strong>' . esc_html($c['as_of'] ?? '?') . '</strong>. No free FedWatch API, so this is maintained by hand.</p>';
+    }, 'reading');
+});
+add_action('update_option_mp_fed_data_json', function ($old, $new) {
+    $j = json_decode((string) $new, true);
+    if (is_array($j) && !empty($j['meetings'])) update_option('mp_fed_data', $j, '', false);
+    delete_option('mp_fed_data_json');
+}, 10, 2);
+
+function mp_macro_fed() {
+    $f = mp_fed_data();
+    $today = gmdate('Y-m-d', time() + 19800);
+    $next = null;
+    foreach ($f['meetings'] as $m) { if ($m >= $today) { $next = $m; break; } }
+    $days = $next ? max(0, (int) floor((strtotime($next) - time()) / 86400)) : null;
+    ob_start(); ?>
+<div class="mp-macro">
+  <p class="mp-fx__crumb"><a href="<?php echo esc_url(home_url('/macro/')); ?>">&larr; Macro monitor</a></p>
+
+  <div class="mp-fx__head">
+    <div class="mp-fx__rate">
+      <strong><?php echo number_format($f['rate_low'], 2); ?>% &ndash; <?php echo number_format($f['rate_high'], 2); ?>%</strong>
+      <div class="mp-fx__inv">Federal funds target range &middot; as of <?php echo esc_html(date('j M Y', strtotime($f['as_of']))); ?></div>
+    </div>
+    <?php if ($next) : ?>
+    <div class="mp-fx__stats">
+      <div><span>Next FOMC decision</span><?php echo esc_html(date('j M Y', strtotime($next))); ?><?php echo $days !== null ? ' (' . $days . ' days)' : ''; ?></div>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <?php if (!empty($f['stance'])) : ?><p><strong>Current stance:</strong> <?php echo wp_kses_post($f['stance']); ?></p><?php endif; ?>
+
+  <h2>2026 FOMC meeting calendar</h2>
+  <div class="mp-comm__tablewrap"><table class="mp-comm__table">
+    <thead><tr><th>Meeting date</th><th>Status</th></tr></thead>
+    <tbody>
+      <?php foreach ($f['meetings'] as $m) : $past = $m < $today; ?>
+        <tr><th scope="row"><?php echo esc_html(date('j M Y', strtotime($m))); ?></th>
+          <td><?php echo $past ? 'Held' : ($m === $next ? '<b>Next</b>' : 'Upcoming'); ?></td></tr>
+      <?php endforeach; ?>
+    </tbody>
+  </table></div>
+
+  <h2>Why the Fed rate matters</h2>
+  <p>The federal funds rate is the interest rate US banks charge each other overnight, and the Fed&rsquo;s main tool for steering the economy. Raising it cools demand and inflation but slows growth; cutting it does the reverse. Because the US dollar is the world&rsquo;s reserve currency, every Fed move ripples into emerging-market currencies, global bond yields, gold, and risk assets everywhere &mdash; including Indian equities and the rupee.</p>
+
+  <h2>Frequently asked questions</h2>
+  <div class="mp-comm__faq">
+    <details open><summary>What is the current US Fed interest rate?</summary>
+      <p>The federal funds target range is <?php echo number_format($f['rate_low'], 2); ?>%&ndash;<?php echo number_format($f['rate_high'], 2); ?>% as of <?php echo esc_html(date('j M Y', strtotime($f['as_of']))); ?>. The Fed sets a range rather than a single number; the effective rate trades near the middle.</p></details>
+    <details><summary>When is the next Fed meeting?</summary>
+      <p><?php echo $next ? 'The next FOMC decision is scheduled for ' . esc_html(date('j M Y', strtotime($next))) . '. Meetings run over two days and the rate decision plus statement come on the afternoon of the second day (US Eastern time), followed by the Chair&rsquo;s press conference.' : 'See the calendar above for the schedule.'; ?></p></details>
+    <details><summary>How does a Fed rate cut affect India?</summary>
+      <p>A cut generally weakens the US dollar and pushes global investors toward higher-yielding markets, which tends to support the rupee, Indian stocks and bonds, and gold. It also gives the RBI more room to cut its own repo rate without pressuring the currency.</p></details>
+  </div>
+
+  <div class="mp-sebi-box" role="note"><strong>Disclaimer:</strong> MoneyPuran is a financial news and education platform. The rate and meeting schedule are maintained manually from Federal Reserve announcements and may lag official updates. Nothing here is investment advice.</div>
+  <?php echo mp_fx_css(); ?>
+</div>
+    <?php
+    return ob_get_clean();
+}
+
+/* ---- SEO for currency + macro ---- */
+function mp_fx_meta() {
+    $slug = mp_fx_ctx();
+    if (!$slug) return null;
+    $p = mp_fx_pairs()[$slug];
+    $d = mp_fx_data($slug);
+    $r = ($d && $d['rate']) ? number_format((float) $d['rate'], 2) : '';
+    return array(
+        'title' => $p[0] . ' to ' . $p[1] . ($r ? ' &mdash; ' . $r . ' Today' : '') . ' | Live Rate & Remittance Calculator | MoneyPuran',
+        'desc' => 'Live ' . $p[2] . ' to ' . $p[3] . ' (' . $p[0] . '/' . $p[1] . ') exchange rate' . ($r ? ' - ' . $r . ' today' : '') . ', with a 24-hour and 30-day range, trend chart and a money-transfer calculator.',
+        'canon' => mp_fx_url($slug), 'h1' => $p[2] . ' to ' . $p[3] . ' (' . $p[0] . ' &rarr; ' . $p[1] . ')',
+        'p' => $p, 'd' => $d,
+    );
+}
+function mp_macro_meta() {
+    $s = sanitize_title((string) get_query_var('mp_macro'));
+    $obj = get_queried_object();
+    if (!($obj instanceof WP_Post) || $obj->post_name !== 'macro' || !$s) return null;
+    if ($s === 'us-treasury-yield-curve') return array(
+        'title' => 'US Treasury Yield Curve Today - 2, 10 & 30 Year Yields & Inversion | MoneyPuran',
+        'desc' => 'Live US Treasury yields (3-month, 5-, 10- and 30-year), the 10Y-3M spread and whether the yield curve is inverted - the classic US recession signal.',
+        'canon' => home_url('/macro/us-treasury-yield-curve/'), 'h1' => 'US Treasury Yield Curve',
+    );
+    if ($s === 'fed-rate-monitor') return array(
+        'title' => 'US Fed Interest Rate Today & FOMC Meeting Calendar 2026 | MoneyPuran',
+        'desc' => 'The current US Federal Reserve federal funds target range, the next FOMC meeting date and the full 2026 schedule, plus what a Fed move means for India.',
+        'canon' => home_url('/macro/fed-rate-monitor/'), 'h1' => 'US Fed Rate Monitor',
+    );
+    return null;
+}
+function mp_fxm_meta() { $a = mp_fx_meta(); return $a ?: mp_macro_meta(); }
+
+add_filter('rank_math/frontend/title', function ($t) { $m = mp_fxm_meta(); return $m ? html_entity_decode($m['title']) : $t; }, 12);
+add_filter('pre_get_document_title', function ($t) { $m = mp_fxm_meta(); return $m ? html_entity_decode($m['title']) : $t; }, 30);
+add_filter('rank_math/frontend/description', function ($t) { $m = mp_fxm_meta(); return $m ? $m['desc'] : $t; }, 12);
+add_filter('rank_math/frontend/canonical', function ($t) { $m = mp_fxm_meta(); return $m ? $m['canon'] : $t; }, 12);
+add_filter('the_title', function ($title, $post_id = 0) {
+    if (is_admin() || !in_the_loop() || !is_main_query()) return $title;
+    $m = mp_fxm_meta();
+    if ($m && in_array(get_post_field('post_name', $post_id), array('currency', 'macro'), true)) return html_entity_decode($m['h1']);
+    return $title;
+}, 12, 2);
+
+add_action('wp_head', function () {
+    $fxm = mp_fx_meta(); $mm = mp_macro_meta();
+    $meta = $fxm ?: $mm;
+    if (!$meta) return;
+    $crumbs = array(array('@type' => 'ListItem', 'position' => 1, 'name' => 'Home', 'item' => home_url('/')));
+    $faqItems = array();
+    if ($fxm) {
+        $crumbs[] = array('@type' => 'ListItem', 'position' => 2, 'name' => 'Currency', 'item' => home_url('/currency/'));
+        $crumbs[] = array('@type' => 'ListItem', 'position' => 3, 'name' => $fxm['p'][0] . ' to ' . $fxm['p'][1], 'item' => $fxm['canon']);
+        $d = $fxm['d'];
+        if ($d && $d['rate']) {
+            $faqItems[] = array('@type' => 'Question', 'name' => 'What is the ' . $fxm['p'][0] . ' to ' . $fxm['p'][1] . ' rate today?',
+                'acceptedAnswer' => array('@type' => 'Answer', 'text' => 'The mid-market rate is ' . number_format((float) $d['rate'], 4) . ' ' . $fxm['p'][1] . ' per ' . $fxm['p'][0] . '. Providers apply a margin and fee on top.'));
+        }
+    } else {
+        $crumbs[] = array('@type' => 'ListItem', 'position' => 2, 'name' => 'Macro', 'item' => home_url('/macro/'));
+        $crumbs[] = array('@type' => 'ListItem', 'position' => 3, 'name' => $mm['h1'], 'item' => $mm['canon']);
+    }
+    $bc = array('@context' => 'https://schema.org', '@type' => 'BreadcrumbList', 'itemListElement' => $crumbs);
+    echo "\n<script type=\"application/ld+json\">" . wp_json_encode($bc, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+    if ($faqItems) {
+        $faq = array('@context' => 'https://schema.org', '@type' => 'FAQPage', 'mainEntity' => $faqItems);
+        echo '<script type="application/ld+json">' . wp_json_encode($faq, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "</script>\n";
+    }
+}, 3);
+
+/* ---- sitemap ---- */
+add_action('parse_request', function () {
+    $path = isset($_SERVER['REQUEST_URI']) ? trim((string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/') : '';
+    if ($path !== 'cross-border-sitemap.xml') return;
+    if (!headers_sent()) { status_header(200); header('Content-Type: application/xml; charset=UTF-8', true); header('X-Robots-Tag: noindex', true); }
+    $now = gmdate('c');
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+    $urls = array(home_url('/currency/'), home_url('/macro/'), home_url('/macro/us-treasury-yield-curve/'), home_url('/macro/fed-rate-monitor/'));
+    foreach (array_keys(mp_fx_pairs()) as $sl) $urls[] = mp_fx_url($sl);
+    foreach ($urls as $u) echo '  <url><loc>' . esc_url($u) . '</loc><lastmod>' . $now . '</lastmod><changefreq>hourly</changefreq><priority>0.6</priority></url>' . "\n";
+    echo '</urlset>';
+    exit;
+}, 0);
+add_filter('robots_txt', function ($o) {
+    if (strpos($o, 'cross-border-sitemap.xml') === false) $o .= "\nSitemap: " . home_url('/cross-border-sitemap.xml') . "\n";
+    return $o;
+}, 23);
+add_filter('rank_math/sitemap/index', function ($links) {
+    $u = home_url('/cross-border-sitemap.xml');
+    if (strpos($links, $u) === false) $links .= '<sitemap><loc>' . esc_url($u) . '</loc><lastmod>' . gmdate('c') . '</lastmod></sitemap>' . "\n";
+    return $links;
+});
+add_filter('mp_quick_tools', function ($t) {
+    if (!isset($t['USD/INR'])) $t['USD/INR'] = '/currency/usd-to-inr/';
+    if (!isset($t['Fed Rate'])) $t['Fed Rate'] = '/macro/fed-rate-monitor/';
     return $t;
 });
